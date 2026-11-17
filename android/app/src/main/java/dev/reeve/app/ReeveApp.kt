@@ -45,7 +45,7 @@ class ReeveApp : Application() {
         if (state.keepAlive) runCatching { KeepAliveService.start(this) }
     }
 
-    /** 正文只有一句摘要（≤ [dev.reeve.app.core.SUMMARY_LIMIT] 字），不含 token 与工具参数原文。 */
+    /** 正文只有一句摘要（≤ [dev.reeve.app.core.SUMMARY_LIMIT] 字），不含会话令牌与工具参数原文。 */
     private fun postNotice(session: BotSession, text: String, kind: NewsKind) {
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -62,7 +62,7 @@ class ReeveApp : Application() {
         val id = (session.ref.key + "|" + noticeTag(kind)).hashCode()
         val pi = PendingIntent.getActivity(this, id, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val texts = noticeTexts(session.profile.name, session.server.name, state.servers.size)
-        // 锁屏公开版本只有 Bot 名：摘要、token、工具参数都不出现在系统锁屏上。
+        // 锁屏公开版本只有 Bot 名：摘要、会话令牌、工具参数都不出现在系统锁屏上。
         val public = NotificationCompat.Builder(this, channel)
             .setSmallIcon(R.drawable.ic_stat_reeve)
             .setContentTitle(texts.publicTitle)

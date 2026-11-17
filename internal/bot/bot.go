@@ -18,7 +18,6 @@ import (
 	"github.com/kiry163/reeve/internal/commands"
 	"github.com/kiry163/reeve/internal/exec"
 	"github.com/kiry163/reeve/internal/exec/cli"
-	"github.com/kiry163/reeve/internal/scheduler"
 	"github.com/kiry163/reeve/internal/skills"
 	"github.com/kiry163/reeve/internal/vault"
 )
@@ -26,7 +25,7 @@ import (
 type Config struct {
 	Name          string
 	DataDir       string // 事件日志、记忆
-	TokenDir      string // 访问 token 所在目录（默认同 DataDir）；脱敏每次重新读这里的 token
+	RootDir       string // 实例级数据目录（默认同 DataDir）；子 Bot 用它找实例级 env 等共享文件
 	Workspace     string // 后台 agent 的工作区
 	ChatProvider  builtin.Provider
 	ChatModel     string
@@ -45,7 +44,6 @@ type Config struct {
 	TurnTimeout          time.Duration // 聊天层每轮上限，默认 90 秒
 	MasterKey            string        // REEVE_MASTER_KEY；为空时用 data/master.key（自动生成）
 	Demo                 bool
-	Timezone             string // 默认 Asia/Shanghai，用于展示与新建计划
 	InitialBaseURL       string
 	InitialKey           string
 }
@@ -60,15 +58,14 @@ type Bot struct {
 	chatG    *builtin.Guard
 	guard    *builtin.Guard // 任务和聊天层共用的审批管线
 	vault    *vault.Vault
-	redactor *redactor // token + 主密钥 + 密钥库的统一脱敏
+	redactor *redactor // 主密钥 + 密钥库 + 网关令牌的统一脱敏
 	sch      sched
-	sched    *scheduler.Engine  // 定时唤醒器（持久化计划）
 	skills   *skills.Set        // 启动时加载一次的技能集合（全局 + bot 私有）
 	commands *commands.Registry // 斜线命令注册表，构造后只读
 
 	modelMu        sync.RWMutex
 	memoryMu       sync.Mutex
-	envMu          sync.Mutex   // 串行化 env.json 的读-改-写（含整体替换）
+	envMu          sync.Mutex   // 串行化实例 env 的读-改-写（含整体替换）
 	pool           *channelPool // 设备上所有 Bot 共用的 API 渠道
 	hasRoutes      bool         // 本 Bot 保存过模型选择（否则退回启动配置里的模型）
 	chatModel      string
@@ -172,11 +169,7 @@ func newRuntime(cfg Config, modelOwner *Bot, profile *BotProfile) (*Bot, error) 
 	if err != nil {
 		return nil, err
 	}
-	tokenDir := cfg.TokenDir
-	if tokenDir == "" {
-		tokenDir = cfg.DataDir
-	}
-	red := newRedactor(vlt, tokenDir, key, cfg.MasterKey)
+	red := newRedactor(vlt, key, cfg.MasterKey)
 	if modelOwner != nil {
 		// 网关令牌是实例级的：主 Bot 签发的令牌，本 Bot 的外部任务输出里同样要抹掉。
 		red.gateway = modelOwner.redactor.gateway
@@ -221,9 +214,6 @@ func newRuntime(cfg Config, modelOwner *Bot, profile *BotProfile) (*Bot, error) 
 	b.chatG, _ = builtin.NewGuard(builtin.Rules{}, nil)
 	b.chatG.Secrets = guardedSecrets{vault: vlt, red: red} // 聊天层工具的输出同样脱敏；直接引用密钥的只读调用会被拒绝
 	b.rebuildChatTools()
-	if err := b.initScheduler(); err != nil {
-		return nil, err
-	}
 	b.ctx, b.cancel = context.WithCancel(context.Background())
 	b.recover()
 	initialized = true
@@ -239,9 +229,6 @@ func (b *Bot) Start() {
 	b.wg.Add(2)
 	go func() { defer b.wg.Done(); b.chatLoop() }()
 	go func() { defer b.wg.Done(); b.watchStalls() }()
-	if b.sched != nil {
-		b.sched.Start(b.ctx)
-	}
 	b.schedule() // 重启前排着队的任务接着排
 	b.wake()
 }
@@ -257,9 +244,6 @@ func (b *Bot) stop() {
 
 func (b *Bot) Close() {
 	b.stop()
-	if b.sched != nil {
-		b.sched.Stop()
-	}
 	b.wg.Wait()
 	b.mgr.Drain()
 	b.background.Wait()

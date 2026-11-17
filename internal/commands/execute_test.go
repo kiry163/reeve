@@ -14,11 +14,11 @@ func (stubBot) ClearContext() error  { return nil }
 func (stubBot) ListTasks() string    { return "" }
 func (stubBot) ContextInfo() string  { return "" }
 func (stubBot) ListSkills() []string { return nil }
-func (stubBot) ListEnv() (map[string]string, map[string]string, error) {
-	return nil, nil, nil
+func (stubBot) ListEnv() (map[string]string, error) {
+	return nil, nil
 }
-func (stubBot) SetEnv(string, string, bool) error     { return nil }
-func (stubBot) UnsetEnv(string, bool) error           { return nil }
+func (stubBot) SetEnv(string, string) error           { return nil }
+func (stubBot) UnsetEnv(string) error                 { return nil }
 func (stubBot) SwitchModel(string) (string, error)    { return "", nil }
 func (stubBot) DefaultExecutor() string               { return "builtin" }
 func (stubBot) AllowedExecutors() []string            { return []string{"builtin"} }
@@ -36,7 +36,7 @@ func newTestRegistry() (*Registry, *Input, *int) {
 	})
 	r.register(Definition{
 		Name: "env", Aliases: []string{"e"}, Summary: "查看/修改环境变量",
-		Usage: "/env [list|set K=V|unset K] [--global]",
+		Usage: "/env [list|set K=V|unset K]",
 		Run: func(_ context.Context, in Input) Result {
 			calls++
 			captured = in
@@ -64,7 +64,7 @@ func TestUnknownCommandListsHelp(t *testing.T) {
 	if res.OK {
 		t.Fatal("未知命令 OK 应为 false")
 	}
-	for _, want := range []string{"/help", "/env", "列出命令与用法", "/env [list|set K=V|unset K] [--global]"} {
+	for _, want := range []string{"/help", "/env", "列出命令与用法", "/env [list|set K=V|unset K]"} {
 		if !strings.Contains(res.Text, want) {
 			t.Errorf("帮助文本缺少 %q：%q", want, res.Text)
 		}
@@ -103,7 +103,6 @@ func TestArgumentSplitting(t *testing.T) {
 		{"/env  list", []string{"list"}},
 		{"  /env \t set   K=V  ", []string{"set", "K=V"}},
 		{"/env set K V", []string{"set", "K", "V"}},
-		{"/env set K=V --global", []string{"set", "K=V", "--global"}},
 		{"/env", nil},
 	} {
 		_, ok := r.Execute(context.Background(), stubBot{}, tc.line)

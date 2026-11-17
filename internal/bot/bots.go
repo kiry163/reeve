@@ -133,10 +133,10 @@ func validateProfiles(profiles []BotProfile) error {
 func (bs *Bots) open(p BotProfile) (*Bot, error) {
 	cfg := bs.main.cfg
 	cfg.Name = p.Name
-	// 访问 token 是整台设备共用的，放在默认 Bot 的数据目录（REEVE_HOME）；必须在改 DataDir 之前取。
-	cfg.TokenDir = bs.main.cfg.TokenDir
-	if cfg.TokenDir == "" {
-		cfg.TokenDir = bs.main.cfg.DataDir
+	// 实例级文件（env 等）在默认 Bot 的数据目录（REEVE_HOME）；必须在改 DataDir 之前取。
+	cfg.RootDir = bs.main.cfg.RootDir
+	if cfg.RootDir == "" {
+		cfg.RootDir = bs.main.cfg.DataDir
 	}
 	cfg.DataDir = filepath.Join(cfg.DataDir, "bots", p.ID)
 	cfg.Workspace = filepath.Join(bs.workRoot, p.ID)
@@ -316,9 +316,9 @@ func (bs *Bots) setProfile(id string, p BotProfile) (BotProfile, error) {
 }
 
 // Handler 是整个程序的 HTTP 入口：/api/bots/{id}/… 转给对应 Bot，/api/settings 等是全局设置，
-// 其余路径提供前端页面（ui 为 nil 时只提供 API）。访问控制（本机限制或登录）由调用方在外面包一层。
+// 其余路径提供前端页面（ui 为 nil 时只提供 API）。访问控制（密码登录）由调用方在外面包一层。
 //
-// 实例级环境变量 GET/PUT /api/env 在这里直接处理；bot 级的 /api/bots/{id}/env 由各 Bot 的 Handler 处理。
+// 实例级环境变量 GET/PUT /api/env 在这里直接处理，所有 Bot 共用同一份。
 // 命令定义是所有 Bot 共用的静态表，顶层 GET /api/commands 直接来自默认 Bot 的注册表；
 // 执行命令是 bot 级行为（POST /api/bots/{id}/commands），顶层不提供。
 func (bs *Bots) Handler(ui fs.FS) http.Handler {
@@ -335,8 +335,7 @@ func (bs *Bots) Handler(ui fs.FS) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, bs.channelsView(), nil)
 	})
-	// 实例级环境变量：所有 Bot 共用同一份（<实例目录>/env）。bot 级的 /api/bots/{id}/env
-	// 由各自的 Handler 处理，这里不要重复注册。
+	// 实例级环境变量：所有 Bot 共用同一份（<实例目录>/env）。
 	mux.HandleFunc("GET /api/env", func(w http.ResponseWriter, r *http.Request) {
 		vars, err := bs.main.InstanceEnv()
 		if vars == nil {
@@ -358,8 +357,11 @@ func (bs *Bots) Handler(ui fs.FS) http.Handler {
 		writeJSON(w, map[string]any{
 			"api_version": 1, "version": currentVersion(),
 			"clients": []string{"web", "android"},
-			"auth":    map[string]any{"session": "cookie", "status_path": "/api/auth/me"},
-			"events":  map[string]any{"transport": "sse", "resume": "Last-Event-ID", "heartbeat_sec": 20},
+			"auth": map[string]any{
+				"login": "/api/auth/login", "session": "cookie|bearer",
+				"status_path": "/api/auth/me", "password_change": "/api/auth/password",
+			},
+			"events": map[string]any{"transport": "sse", "resume": "Last-Event-ID", "heartbeat_sec": 20},
 			"limits": map[string]any{"json_bytes": maxJSONBody, "upload_file_bytes": maxUpload,
 				"upload_request_bytes": maxUpload + (1 << 20), "upload_files": 16, "bots": maxBots},
 		}, nil)

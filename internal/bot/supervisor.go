@@ -21,10 +21,8 @@ import (
 
 // TaskOpts 是创建任务时的选项。
 type TaskOpts struct {
-	Hold       bool   // true = 只记成待办（暂停状态），等用户或聊天层说"开始"再跑
-	ID         string // 可选：确定性任务 ID（定时唤醒器用，避免重启后重复派发）
-	ScheduleID string // 可选：来源定时计划
-	Executor   string // 可选：执行器 kind；空 = 当前默认执行器（CreateTask 才补默认值）
+	Hold     bool   // true = 只记成待办（暂停状态），等用户或聊天层说"开始"再跑
+	Executor string // 可选：执行器 kind；空 = 当前默认执行器（CreateTask 才补默认值）
 }
 
 type sched struct {
@@ -92,23 +90,18 @@ func (b *Bot) CreateTask(input, title string, o TaskOpts) (string, error) {
 }
 
 func (b *Bot) createTask(input, title string, o TaskOpts, direct bool, history []builtin.Message) (string, error) {
-	rec, exists, err := b.prepareTask(input, title, o, direct, history)
+	rec, err := b.prepareTask(input, title, o, direct, history)
 	if err != nil {
 		return "", err
-	}
-	if exists { // 同 ID 已存在：幂等，直接返回（定时器重启后的二次派发）
-		b.schedule()
-		return rec.ID, nil
 	}
 	return b.commitTask(rec), nil
 }
 
 // prepareTask 生成任务记录但先不落盘。外部派活要在写入 task.created 之前拿到用户批准，
 // 批准后由 commitTask 真正建任务：审批前任务数必须为 0。
-// ID 已存在时返回 exists=true，调用方只需 schedule，不要重复 append。
-func (b *Bot) prepareTask(input, title string, o TaskOpts, direct bool, history []builtin.Message) (TaskRec, bool, error) {
+func (b *Bot) prepareTask(input, title string, o TaskOpts, direct bool, history []builtin.Message) (TaskRec, error) {
 	if strings.TrimSpace(input) == "" {
-		return TaskRec{}, false, errors.New("任务内容为空")
+		return TaskRec{}, errors.New("任务内容为空")
 	}
 	if title == "" {
 		title = defaultTitle(input)
@@ -117,22 +110,12 @@ func (b *Bot) prepareTask(input, title string, o TaskOpts, direct bool, history 
 	if kind == string(exec.KindBuiltin) {
 		kind = "" // 内置执行器的记录保持空串，与旧任务一致
 	}
-	id := o.ID
-	if id == "" {
-		id = builtin.NewID("task")
-	} else if _, exists := b.store.Task(id); exists {
-		return TaskRec{ID: id}, true, nil
-	}
-	rec := TaskRec{ID: id, Title: title, Input: input, Executor: kind, DirectChat: direct, History: history,
+	rec := TaskRec{ID: builtin.NewID("task"), Title: title, Input: input, Executor: kind, DirectChat: direct, History: history,
 		Status: "queued", Prio: float64(time.Now().UnixNano()), CreatedAt: time.Now()}
 	if o.Hold {
 		rec.Status, rec.StopReason = "paused", "held"
 	}
-	if o.ScheduleID != "" && !strings.HasPrefix(rec.Title, "定时·") {
-		// 标题前缀让界面能看出是定时触发的
-		rec.Title = "定时·" + rec.Title
-	}
-	return rec, false, nil
+	return rec, nil
 }
 
 // commitTask 把准备好的任务写进事件日志并尝试调度。只应在审批通过后（或本来就不需要审批时）调用。
@@ -221,7 +204,7 @@ func (b *Bot) schedule() {
 	}
 }
 
-// builtinTask 把存储层记录转成执行层任务。环境在任务启动时现取（含实例级/bot 级），
+// builtinTask 把存储层记录转成执行层任务。环境在任务启动时现取（进程环境 + 实例级），
 // 只随本次执行传入，不写进事件日志，避免密钥落盘。
 func (b *Bot) builtinTask(t TaskRec, profile BotProfile) builtin.Task {
 	task := builtin.Task{ID: t.ID, BotID: profile.ID, Input: t.Input, History: t.History,
@@ -938,13 +921,6 @@ func (b *Bot) terminalTask(id string, res builtin.Result) {
 	if t, ok := b.store.Task(id); ok && (t.Status == "completed" || t.Status == "cancelled" && t.StopReason == "user") {
 		b.removeCheckpoint(id)
 	}
-	if b.sched != nil {
-		st := string(res.Status)
-		if t, ok := b.store.Task(id); ok {
-			st = t.Status
-		}
-		b.sched.MarkTaskFinished(id, st)
-	}
 	b.runBackground(func() { b.report(id); b.schedule() }) // 不在执行器 goroutine 里做重活
 }
 
@@ -1158,19 +1134,6 @@ func (b *Bot) terminateStalled(id, msg string) {
 	}
 }
 
-// openScheduleClaim 判断任务是否还有未闭合的定时认领（即定时计划派生的任务）。
-func (b *Bot) openScheduleClaim(taskID string) bool {
-	if b.sched == nil {
-		return false
-	}
-	for _, c := range b.sched.Store.Claims() {
-		if c.TaskID == taskID && (c.Status == "claimed" || c.Status == "dispatched") {
-			return true
-		}
-	}
-	return false
-}
-
 // recover 在启动时处理上次没收尾的东西：
 //   - 运行中和排队中的任务都改成"暂停"，由用户决定是否继续，而不是自动开跑；
 //     内置任务有检查点，标 restart；外部任务的进程随上次退出一起没了，标 interrupted，不自动重跑；
@@ -1179,7 +1142,7 @@ func (b *Bot) openScheduleClaim(taskID string) bool {
 //
 // 上次留下的外部 CLI 进程组不在这里清理（可能已不存在，也可能不属于本实例），见 spec 的已知边界。
 func (b *Bot) recover() {
-	var restarted, interrupted, interruptedScheduled []string
+	var restarted, interrupted []string
 	for _, t := range b.store.Tasks() {
 		if t.Status != "running" && t.Status != "queued" && !t.Pausing {
 			continue
@@ -1190,14 +1153,10 @@ func (b *Bot) recover() {
 		}
 		b.store.Append("task.updated", TaskRec{ID: t.ID, Status: "paused", StopReason: reason}, false)
 		label := fmt.Sprintf("「%s」(%s)", t.Title, t.ID)
-		switch {
-		case reason != "interrupted":
-			restarted = append(restarted, label)
-		case b.openScheduleClaim(t.ID):
-			// 定时计划派生：claim 还开着，重新派一次会留下未闭合认领，overlap=skip 会一直跳过。
-			interruptedScheduled = append(interruptedScheduled, label)
-		default:
+		if reason == "interrupted" {
 			interrupted = append(interrupted, label)
+		} else {
+			restarted = append(restarted, label)
 		}
 	}
 	b.guard.Restore(b.store.ApprovalRecords())
@@ -1206,9 +1165,6 @@ func (b *Bot) recover() {
 	}
 	if len(interrupted) > 0 {
 		b.notify(fmt.Sprintf("服务重启了，这些外部执行器任务已中断（不会自动重跑，需要请重新派一次）：%s。简短告诉用户它被中断了、没有自动重跑，需要的话用 start_task 按原要求重新派一次。", strings.Join(interrupted, "、")))
-	}
-	if len(interruptedScheduled) > 0 {
-		b.notify(fmt.Sprintf("服务重启了，这些由定时计划派生的外部任务已中断（不会自动重跑）：%s。请让用户选择恢复（继续）或取消它；否则它对应的定时计划会一直跳过后续触发。", strings.Join(interruptedScheduled, "、")))
 	}
 	for _, t := range b.store.Tasks() {
 		if !t.Reported && terminal(t.Status) {

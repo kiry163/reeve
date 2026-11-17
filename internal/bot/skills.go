@@ -76,7 +76,7 @@ func (b *Bot) redactDataDir(msg string) string {
 	prefixes := []struct{ abs, label string }{
 		{filepath.Join(b.cfg.DataDir, "skills"), "skills"},      // bot 私有技能根
 		{filepath.Join(b.instanceEnvDir(), "skills"), "skills"}, // 实例级技能根（主 Bot 与上一行相同）
-		{b.cfg.DataDir, "data"},                                 // bot 数据目录（env.json 等）
+		{b.cfg.DataDir, "data"},                                 // bot 数据目录
 		{b.instanceEnvDir(), "data"},                            // 实例目录（env 等；非默认 Bot 指向主数据目录）
 	}
 	for _, p := range prefixes {

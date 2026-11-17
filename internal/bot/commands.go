@@ -113,9 +113,6 @@ func (b *Bot) ContextInfo() string {
 		len(msgs), builtin.EstimateTokens(history), b.cfg.ContextTokens, tools)
 }
 
-// ListEnv 返回实例级与 bot 级环境变量，供 /env list 使用。
-func (b *Bot) ListEnv() (instance, bot map[string]string, err error) { return b.View() }
-
 // SwitchModel 查看或切换聊天模型。没有参数时返回当前模型名；有参数时要求模型存在于
 // 已启用渠道的模型列表里，写回本 Bot 的模型选择。
 func (b *Bot) SwitchModel(name string) (string, error) {

@@ -84,7 +84,7 @@ private fun statusText(s: ServerEntry): String = when (val st = s.status) {
         "在线 · $n 个 Bot" + if (s.config.insecure) " · HTTP 未加密" else ""
     }
     ServerStatus.Connecting -> "正在连接"
-    ServerStatus.NeedsPairing -> "token 已失效，需要重新配对"
+    ServerStatus.NeedsLogin -> "登录已过期，需要重新输入密码"
     is ServerStatus.Offline -> "离线：${st.error}"
 }
 
@@ -100,9 +100,8 @@ fun SettingsScreen(state: AppState, nav: Nav) {
             state.servers.forEach { s ->
                 ListRow(s.name, statusText(s), Icons.Outlined.Dns, chevron = true, onClick = { nav.push(Screen.Server(s.id)) })
             }
-            ListRow("添加服务器", "扫码、粘贴配对串或手填地址 + token", Icons.Filled.Add, titleColor = MaterialTheme.colorScheme.primary, onClick = { nav.push(Screen.AddServer()) })
+            ListRow("添加服务器", "扫码或手填地址，然后输入密码", Icons.Filled.Add, titleColor = MaterialTheme.colorScheme.primary, onClick = { nav.push(Screen.AddServer()) })
             SectionLabel("Bot 设置")
-            ListRow("环境变量", "实例级与当前 Bot 的变量", Icons.Outlined.Terminal, chevron = true, onClick = { nav.push(Screen.Env()) })
             ListRow("执行器", "白名单、默认执行器与外部 CLI", Icons.Outlined.Memory, chevron = true, onClick = { nav.push(Screen.Executors()) })
             ListRow("技能", "服务器加载的技能索引", Icons.AutoMirrored.Outlined.MenuBook, chevron = true, onClick = { nav.push(Screen.Skills()) })
             SectionLabel("通用")
@@ -176,16 +175,17 @@ fun ServerScreen(state: AppState, s: ServerEntry, nav: Nav) {
         SectionLabel("连接")
         ListRow("地址", s.config.url)
         ListRow("状态", statusText(s) + (session?.info?.version?.let { " · reeve $it" } ?: ""))
-        if (s.config.insecure) Note("明文 HTTP：token 和聊天内容在网络上不加密，建议给服务器配域名开启 HTTPS。", Reeve.extra.warn)
+        if (s.config.insecure) Note("明文 HTTP：登录密码和聊天内容在网络上不加密，建议给服务器配域名开启 HTTPS。", Reeve.extra.warn)
         ListRow(
-            if (s.needsPairing) "重新配对" else "配对",
-            if (s.needsPairing) "token 已失效" else "token 由配对串提供",
+            if (s.needsLogin) "重新登录" else "登录",
+            if (s.needsLogin) "登录已过期" else "设备会话由密码登录换取",
             Icons.Outlined.AccountCircle, chevron = true, onClick = { nav.push(Screen.AddServer(s.id)) },
         )
+        ListRow("环境变量", "实例级，所有 Bot 共用", Icons.Outlined.Terminal, chevron = true, onClick = { nav.push(Screen.Env(s.id)) })
 
         SectionLabel("Bot 的模型和执行器")
         if (session == null) {
-            Note(if (s.needsPairing) "重新配对后才能读取设置。" else "这台服务器上还没有可设置的 Bot。")
+            Note(if (s.needsLogin) "重新登录后才能读取设置。" else "这台服务器上还没有可设置的 Bot。")
         } else {
             Box {
                 ListRow("设置哪个 Bot", session.profile.name, Icons.Outlined.SmartToy, onClick = { picker = true })
@@ -204,9 +204,8 @@ fun ServerScreen(state: AppState, s: ServerEntry, nav: Nav) {
             ListRow("任务模型", agent, chevron = true, onClick = { nav.push(Screen.BotEditor(s.id, session.ref)) })
             ListRow("API 渠道", st?.let { "${it.channels.size} 个渠道" } ?: "—", Icons.Outlined.Cable, chevron = true, onClick = { nav.push(Screen.Channels(session.ref)) })
             ListRow("执行器", "白名单、默认执行器与外部 CLI", Icons.Outlined.SmartToy, chevron = true, onClick = { nav.push(Screen.Executors(session.ref)) })
-            ListRow("环境变量", "实例级与这个 Bot 的变量", Icons.Outlined.Terminal, chevron = true, onClick = { nav.push(Screen.Env(session.ref)) })
             ListRow("技能", "这个 Bot 加载的技能索引", Icons.AutoMirrored.Outlined.MenuBook, chevron = true, onClick = { nav.push(Screen.Skills(session.ref)) })
-            Note("API 渠道整个 reeve 共用；聊天模型、任务模型、执行器和环境变量每个 Bot 各自设置，互不影响。")
+            Note("API 渠道整个 reeve 共用；聊天模型、任务模型、执行器和技能每个 Bot 各自设置。环境变量是实例级，在服务器的「连接」里修改。")
         }
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))

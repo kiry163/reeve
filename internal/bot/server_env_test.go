@@ -119,7 +119,7 @@ func TestEnvPutRoundTrip(t *testing.T) {
 	}
 }
 
-// 整体替换：body 里没有的键被删除，并留下 env.unset 审计事件。
+// 整体替换：body 里没有的键被删除，并留下不含 layer 的 env.unset 审计事件。
 func TestEnvPutReplacesWholeSet(t *testing.T) {
 	bs, h := newEnvServer(t)
 	if w, body := envRequest(t, h, "PUT", "/api/env", `{"vars":{"REEVE_HTTP_A":"1","REEVE_HTTP_B":"2"}}`); w.Code != http.StatusOK {
@@ -137,48 +137,11 @@ func TestEnvPutReplacesWholeSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"kind":"env.unset"`) || !strings.Contains(string(raw), "REEVE_HTTP_B") ||
-		!strings.Contains(string(raw), `"layer":"instance"`) {
-		t.Fatalf("应写入 layer=instance 的 env.unset 事件: %s", raw)
+	if !strings.Contains(string(raw), `"kind":"env.unset"`) || !strings.Contains(string(raw), "REEVE_HTTP_B") {
+		t.Fatalf("应写入 env.unset 事件: %s", raw)
 	}
-}
-
-// bot 级 PUT 走 Bot 方法：审计事件有 env.set/env.unset、含变量名、不含值。
-func TestBotEnvPutAuditsWithoutValues(t *testing.T) {
-	bs, h := newEnvServer(t)
-	_, body := envRequest(t, h, "POST", "/api/bots", `{"name":"EnvChild"}`)
-	var child BotProfile
-	if err := json.Unmarshal([]byte(body), &child); err != nil || child.ID == "" {
-		t.Fatalf("创建 Bot 失败: %s %v", body, err)
-	}
-	base := "/api/bots/" + child.ID + "/env"
-	const value = "http://user:pass@127.0.0.1:7891"
-	if w, body := envRequest(t, h, "PUT", base, `{"vars":{"HTTPS_PROXY":"`+value+`"}}`); w.Code != http.StatusOK {
-		t.Fatalf("bot 级 PUT 失败 %d: %s", w.Code, body)
-	}
-	_, body = envRequest(t, h, "GET", base, "")
-	vars := envVarsFrom(t, body)
-	if vars["HTTPS_PROXY"] != value {
-		t.Fatalf("bot 级回读不一致: %v", vars)
-	}
-	if w, body := envRequest(t, h, "PUT", base, `{"vars":{}}`); w.Code != http.StatusOK {
-		t.Fatalf("清空失败 %d: %s", w.Code, body)
-	}
-	_, body = envRequest(t, h, "GET", base, "")
-	if vars = envVarsFrom(t, body); len(vars) != 0 {
-		t.Fatalf("清空后应为空: %v", vars)
-	}
-	raw, err := os.ReadFile(filepath.Join(bs.runtimes[child.ID].cfg.DataDir, "stream.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{`"kind":"env.set"`, `"kind":"env.unset"`, "HTTPS_PROXY", `"layer":"bot"`, `"source":"user"`} {
-		if !strings.Contains(string(raw), want) {
-			t.Fatalf("审计事件缺少 %s: %s", want, raw)
-		}
-	}
-	if strings.Contains(string(raw), "7891") || strings.Contains(string(raw), "pass") {
-		t.Fatalf("审计事件不应包含值: %s", raw)
+	if strings.Contains(string(raw), `"layer"`) {
+		t.Fatalf("env 事件不应再有 layer: %s", raw)
 	}
 }
 
@@ -213,14 +176,11 @@ func TestEnvPutWarnsOnSecretLookingValue(t *testing.T) {
 	}
 }
 
-// env 文件损坏时，命令、工具与 HTTP 三个面的错误文案都不能带数据目录绝对路径。
+// env 文件损坏时，命令、工具与 HTTP 的错误文案都不能带数据目录绝对路径。
 func TestEnvErrorsRedactDataDirPaths(t *testing.T) {
 	bs, h := newEnvServer(t)
 	dataDir := bs.main.cfg.DataDir
 	if err := os.WriteFile(filepath.Join(dataDir, "env"), []byte("NOT_A_PAIR\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dataDir, "env.json"), []byte("{broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	check := func(surface, msg string) {
@@ -233,7 +193,7 @@ func TestEnvErrorsRedactDataDirPaths(t *testing.T) {
 		}
 	}
 
-	for _, line := range []string{"/env list", "/env set A=1", "/env set A=1 --global", "/env unset A", "/env unset A --global"} {
+	for _, line := range []string{"/env list", "/env set A=1", "/env unset A"} {
 		res, ok := bs.main.CommandLine(context.Background(), line)
 		if !ok || res.OK {
 			t.Fatalf("%s 应失败：%+v", line, res)
@@ -257,8 +217,6 @@ func TestEnvErrorsRedactDataDirPaths(t *testing.T) {
 	for _, c := range []struct{ method, path, body string }{
 		{"GET", "/api/env", ""},
 		{"PUT", "/api/env", `{"vars":{"A":"1"}}`},
-		{"GET", "/api/bots/main/env", ""},
-		{"PUT", "/api/bots/main/env", `{"vars":{"A":"1"}}`},
 	} {
 		w, body := envRequest(t, h, c.method, c.path, c.body)
 		if w.Code != http.StatusBadRequest {
@@ -268,20 +226,32 @@ func TestEnvErrorsRedactDataDirPaths(t *testing.T) {
 	}
 }
 
-// PUT /api/env 与 bot 级同端点都拒绝 {{secret:…}} 字面量；普通值照常保存。
+// bot 级端点已移除：任何方法都应 404。
+func TestBotLevelEnvEndpointRemoved(t *testing.T) {
+	_, h := newEnvServer(t)
+	for _, c := range []struct{ method, path, body string }{
+		{"GET", "/api/bots/main/env", ""},
+		{"PUT", "/api/bots/main/env", `{"vars":{"A":"1"}}`},
+	} {
+		w, body := envRequest(t, h, c.method, c.path, c.body)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("%s %s 应 404，得到 %d：%s", c.method, c.path, w.Code, body)
+		}
+	}
+}
+
+// PUT /api/env 拒绝 {{secret:…}} 字面量；普通值照常保存。
 func TestEnvPutRejectsSecretRefs(t *testing.T) {
 	_, h := newEnvServer(t)
-	for _, path := range []string{"/api/env", "/api/bots/main/env"} {
-		w, body := envRequest(t, h, "PUT", path, `{"vars":{"DATABASE_URL":"postgres://u:{{secret:PG_PASS}}@db/app"}}`)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("%s 应拒绝密钥引用，得到 %d: %s", path, w.Code, body)
-		}
-		if !strings.Contains(body, "密钥请用设置页的密钥卡片，不要写进环境变量") {
-			t.Fatalf("%s 的错误文案不对：%s", path, body)
-		}
-		if w, body := envRequest(t, h, "PUT", path, `{"vars":{"PLAIN_VALUE":"hello"}}`); w.Code != http.StatusOK {
-			t.Fatalf("%s 的普通值不应受影响，得到 %d: %s", path, w.Code, body)
-		}
+	w, body := envRequest(t, h, "PUT", "/api/env", `{"vars":{"DATABASE_URL":"postgres://u:{{secret:PG_PASS}}@db/app"}}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("应拒绝密钥引用，得到 %d: %s", w.Code, body)
+	}
+	if !strings.Contains(body, "密钥请用设置页的密钥卡片，不要写进环境变量") {
+		t.Fatalf("错误文案不对：%s", body)
+	}
+	if w, body := envRequest(t, h, "PUT", "/api/env", `{"vars":{"PLAIN_VALUE":"hello"}}`); w.Code != http.StatusOK {
+		t.Fatalf("普通值不应受影响，得到 %d: %s", w.Code, body)
 	}
 }
 
@@ -290,24 +260,6 @@ func TestEnvPutRequiresVarsField(t *testing.T) {
 	_, h := newEnvServer(t)
 	if w, body := envRequest(t, h, "PUT", "/api/env", `{"other":1}`); w.Code != http.StatusBadRequest {
 		t.Fatalf("缺少 vars 应 400，得到 %d: %s", w.Code, body)
-	}
-}
-
-// bot 级同样先全量校验：两个键其中一个是非法名 → 400 且回读未变。
-func TestBotEnvPutRejectsInvalidNameAtomically(t *testing.T) {
-	_, h := newEnvServer(t)
-	const base = "/api/bots/main/env"
-	if w, body := envRequest(t, h, "PUT", base, `{"vars":{"REEVE_BOT_KEEP":"one","REEVE_BOT_OK":"x"}}`); w.Code != http.StatusOK {
-		t.Fatalf("初始化失败 %d: %s", w.Code, body)
-	}
-	w, body := envRequest(t, h, "PUT", base, `{"vars":{"REEVE_BOT_KEEP":"two","BAD-NAME":"x"}}`)
-	if w.Code != http.StatusBadRequest || !strings.Contains(body, "BAD-NAME") {
-		t.Fatalf("非法变量名应 400 并点名，得到 %d: %s", w.Code, body)
-	}
-	_, body = envRequest(t, h, "GET", base, "")
-	vars := envVarsFrom(t, body)
-	if len(vars) != 2 || vars["REEVE_BOT_KEEP"] != "one" || vars["REEVE_BOT_OK"] != "x" {
-		t.Fatalf("非法 PUT 不应改动任何键，得到 %v", vars)
 	}
 }
 

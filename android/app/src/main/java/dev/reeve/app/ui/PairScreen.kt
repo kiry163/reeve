@@ -62,11 +62,11 @@ import kotlinx.coroutines.launch
 /**
  * 配对页：扫码、粘贴配对串、手填三种入口都落到同一份草稿。
  *
- * 深链 `reeve://pair?…` 与「编辑服务器 / 重新配对」通过 [initial] / [existing] 预填，**不会自动保存**：
- * 用户必须点「配对」。编辑模式同样能扫码或粘贴，token 轮换时不用手抄。
+ * 深链 `reeve://pair?…` 与「编辑服务器」通过 [initial] / [existing] 预填地址，**不会自动保存**：
+ * 用户输入密码并点「登录并保存」后，服务端返回设备会话，手机上只保存会话令牌，不保存密码。
  *
- * [fromExternalLink] 为 true 时（地址和 token 来自外部 App / 网页触发的深链），页面顶部展示完整
- * 地址警告，并要求勾选「我已核对地址」才能保存；扫码 / 粘贴 / 手填不走这条路径。
+ * [fromExternalLink] 为 true 时（地址来自外部 App / 网页触发的深链），页面顶部展示完整地址警告，
+ * 并要求勾选「我已核对地址」才能保存；扫码 / 粘贴 / 手填不走这条路径。
  */
 @Composable
 fun PairScreen(
@@ -80,10 +80,10 @@ fun PairScreen(
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val start = remember { initial ?: existing?.let { PairDraft.fromConfig(it.config) } ?: PairDraft() }
-    // 手填内容尽量不丢；token 不进 savedInstanceState，只在内存里
+    // 手填内容尽量不丢；密码不进 savedInstanceState，只在内存里
     var name by rememberSaveable { mutableStateOf(start.name) }
     var address by rememberSaveable { mutableStateOf(start.address) }
-    var token by remember { mutableStateOf(start.token) }
+    var password by remember { mutableStateOf(start.password) }
     var show by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -95,7 +95,7 @@ fun PairScreen(
 
     fun apply(draft: PairDraft) {
         address = draft.address
-        token = draft.token
+        password = draft.password
         if (draft.name.isNotBlank()) name = draft.name
         addressConfirmed = false
         error = null
@@ -140,7 +140,7 @@ fun PairScreen(
         }
     }
 
-    SubPage(if (editing) "编辑服务器" else "配对服务器", nav) {
+    SubPage(if (editing) "编辑服务器" else "添加服务器", nav) {
         Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             if (fromExternalLink) {
                 Column(
@@ -181,7 +181,7 @@ fun PairScreen(
             if (cameraBlocked) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "没有相机权限，没法扫码。可以在系统设置里允许相机，或者直接粘贴配对串 / 手填地址和 token。",
+                        "没有相机权限，没法扫码。可以在系统设置里允许相机，或者直接粘贴配对串 / 手填地址和密码。",
                         fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f),
                     )
                     TextButton(
@@ -199,9 +199,9 @@ fun PairScreen(
                 }
             }
             Text(
-                if (editing) "重新配对会替换这枚 token。可以扫码、粘贴新的配对串，或改地址 / token 后保存。"
-                else if (address.isBlank() && token.isBlank()) "扫码或粘贴配对串会自动填好地址和 token；也可以直接手填。"
-                else "已填入配对串里的地址和 token，确认后点「配对」。",
+                if (editing) "修改地址会替换这台服务器的设备会话；输入密码后保存，原有 Bot 设置会保留。"
+                else if (address.isBlank() && password.isBlank()) "扫码或粘贴配对串会自动填好地址；也可以直接手填地址和密码。"
+                else "确认地址和密码后点「登录并保存」。",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedTextField(
@@ -215,19 +215,19 @@ fun PairScreen(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth(),
             )
             OutlinedTextField(
-                token, { token = it }, label = { Text("Token") }, placeholder = { Text("配对串里的 token") }, singleLine = true,
+                password, { password = it }, label = { Text("服务器密码") }, placeholder = { Text("首次启动时打印的初始密码") }, singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 trailingIcon = {
                     IconButton(onClick = { show = !show }) {
-                        Icon(if (show) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, "显示 token")
+                        Icon(if (show) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, "显示密码")
                     }
                 },
             )
             if (insecure) {
                 Text(
-                    "这是明文 HTTP 连接，token 和聊天内容在网络上不加密。reeve 没有 TLS：请只在可信局域网使用，" +
+                    "这是明文 HTTP 连接，登录密码和聊天内容在网络上不加密。reeve 没有 TLS：请只在可信局域网使用，" +
                         "跨网络请用 Tailscale 或 SSH 隧道。",
                     color = Reeve.extra.warn, fontSize = 13.sp,
                 )
@@ -243,20 +243,21 @@ fun PairScreen(
                 onClick = {
                     busy = true; error = null
                     scope.launch {
-                        runCatching { state.pair(PairDraft(address, token, name), editing = existing) }
+                        runCatching { state.pair(PairDraft(address, password, name), editing = existing) }
                             .onSuccess { nav.pop() }
                             .onFailure { error = ServerClient.describe(it) }
                         busy = false
                     }
                 },
-                enabled = canPair(address, token, fromExternalLink, addressConfirmed, busy),
+                enabled = canPair(address, password, fromExternalLink, addressConfirmed, busy),
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text(if (busy) "正在校验…" else "配对") }
+            ) { Text(if (busy) "正在登录…" else if (editing) "保存" else "登录并保存") }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Outlined.Info, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(
-                    "token 由 reeve 生成（运行 reeve token show，或看安装完打印的配对串），手机只保存这一份。" +
-                        "保存前会先检查服务器是否可达、token 是否有效；同一台服务器重新配对会保留原有 Bot 设置。",
+                    "密码只用于登录；手机保存的是服务器签发的设备会话，不会保存密码。" +
+                        "服务器首次启动时会打印初始密码，忘了可以在服务器上运行 reeve passwd 重设。" +
+                        "同一台服务器重新登录会保留原有 Bot 设置。",
                     fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }

@@ -34,18 +34,14 @@ import (
 //	GET  /api/secrets              密钥列表（只有名字、说明、时间，永远没有值）
 //	POST /api/secrets              {"request_id":"sec_…","value":"…"}（或 {"name","value","description"}）
 //	                               值只经过这一个接口，直接加密落盘，不进聊天记录/事件/日志
-//	GET  /api/schedules             定时计划列表
-//	GET  /api/schedules/{id}         单个计划
-//	POST /api/schedules/{id}/{action} pause|resume|run|delete（界面按钮；创建/大改仍走聊天层审批）
 //	POST /api/secrets/requests/{id}/cancel   取消密钥卡片（= 拒绝提供）
-//	GET/PUT /api/env               本 Bot 的 bot 级环境变量（整体替换）
 //	POST /api/commands             {"line":"/env list"} 执行一行斜线命令，返回 {"text","ok"}
 //	                               非命令（不以 / 开头）返回 400；command.result 事件由 CommandLine 写
 //	GET  /api/skills               技能索引（含加载错误；path 是 skills/<目录>/SKILL.md 相对标签）
 //	GET  /api/executors            本 Bot 的执行器白名单、默认执行器与 CLI 选项
 //	PUT  /api/executors            整体替换（用户操作，直接生效；模型没有修改白名单的工具）
 //
-// 实例级环境变量（所有 Bot 共用）在 Bots.Handler 的顶层 /api/env，语义相同；
+// 实例级环境变量（所有 Bot 共用）在 Bots.Handler 的顶层 /api/env。
 // 命令定义是全局静态表，在顶层 GET /api/commands。
 func (b *Bot) Handler(webDir string) http.Handler {
 	mux := http.NewServeMux()
@@ -249,18 +245,6 @@ func (b *Bot) Handler(webDir string) http.Handler {
 	mux.HandleFunc("GET /api/secrets", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, b.vault.List(), nil)
 	})
-	// 本 Bot 的 bot 级环境变量。实例级（所有 Bot 共用）是顶层 /api/env，
-	// 由 Bots.Handler 直接处理；/api/bots/{id}/env 经过前缀转发后落到这里。
-	mux.HandleFunc("GET /api/env", func(w http.ResponseWriter, r *http.Request) {
-		vars, err := b.BotEnv()
-		if vars == nil {
-			vars = map[string]string{}
-		}
-		writeJSON(w, envVars{Vars: vars}, err)
-	})
-	mux.HandleFunc("PUT /api/env", func(w http.ResponseWriter, r *http.Request) {
-		handleEnvPut(w, r, b.ReplaceBotEnv)
-	})
 	// 执行一行斜线命令。结果由 CommandLine 写成 command.result 事件，这里只回 HTTP 响应。
 	mux.HandleFunc("POST /api/commands", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -317,40 +301,6 @@ func (b *Bot) Handler(webDir string) http.Handler {
 	})
 	mux.HandleFunc("POST /api/secrets/requests/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]bool{"ok": true}, b.CancelSecret(r.PathValue("id")))
-	})
-	mux.HandleFunc("GET /api/schedules", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, b.Schedules(), nil)
-	})
-	mux.HandleFunc("GET /api/schedules/{id}", func(w http.ResponseWriter, r *http.Request) {
-		p, err := b.findSchedule(r.PathValue("id"))
-		if err != nil {
-			writeJSON(w, nil, err)
-			return
-		}
-		writeJSON(w, p.Public(), nil)
-	})
-	mux.HandleFunc("POST /api/schedules/{id}/{action}", func(w http.ResponseWriter, r *http.Request) {
-		id, action := r.PathValue("id"), r.PathValue("action")
-		p, err := b.findSchedule(id)
-		if err != nil {
-			writeJSON(w, nil, err)
-			return
-		}
-		switch action {
-		case "pause":
-			p2, err := b.sched.SetEnabled(p.ID, false)
-			writeJSON(w, p2.Public(), err)
-		case "resume":
-			p2, err := b.sched.SetEnabled(p.ID, true)
-			writeJSON(w, p2.Public(), err)
-		case "run":
-			c, err := b.sched.RunNow(p.ID)
-			writeJSON(w, map[string]any{"claim": c, "task_id": c.TaskID}, err)
-		case "delete":
-			writeJSON(w, map[string]bool{"ok": true}, b.sched.Remove(p.ID))
-		default:
-			writeJSON(w, nil, fmt.Errorf("未知操作 %s（pause|resume|run|delete）", action))
-		}
 	})
 	mux.HandleFunc("GET /api/stream", b.serveStream)
 	if webDir != "" {
@@ -478,7 +428,7 @@ type envReplaceResult struct {
 	Warnings []string `json:"warnings"`
 }
 
-// handleEnvPut 统一实例级与 bot 级 PUT 的处理：decode → 取 vars → 整体替换 → 响应，
+// handleEnvPut 统一实例级 PUT 的处理：decode → 取 vars → 整体替换 → 响应，
 // 让两个端点共用同一套错误文案与响应形状。
 func handleEnvPut(w http.ResponseWriter, r *http.Request, replace func(map[string]string) ([]string, error)) {
 	var body envVarsBody

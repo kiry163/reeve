@@ -21,14 +21,13 @@
 
 | Area | What you get |
 |---|---|
-| Bots | Up to 32, each with its own workspace, memory, secrets, env vars, model and schedules |
+| Bots | Up to 32, each with its own workspace, memory, secrets, env vars and model |
 | Executors | Built-in agent (any OpenAI-compatible model) by default; `codex` / `pi` / `omp` CLIs as explicit upgrades |
 | Approvals | Rules → policy → card; one approval is bound to a single call, reusable for identical calls within the same task |
-| Env vars | Three layers (instance / bot / call), readable by the model, writes audited; secrets never enter them |
+| Env vars | Instance-level + per-call; readable by the model, writes audited; service install imports PATH/timezone/proxy/TLS from your shell; secrets never enter env |
 | Vault | AES-256-GCM at rest; the model only sees placeholders, outputs are redacted |
 | Skills | Local `SKILL.md`, indexed into the system prompt, body read on demand |
 | Slash commands | Parsed by the server and **never sent to the model**: `/help` `/stop` `/clear` `/model` `/agent` `/env` `/skills` `/context` `/tasks` `/approve` |
-| Schedules | Per-bot plans (once / daily / weekly) that dispatch work on time |
 | Service | `reeve service install` sets up launchd (macOS) or systemd `--user` (Linux) |
 
 Architecture, event catalogue and design rationale live in [docs/superpowers/specs/2026-11-14-reeve-design.md](docs/superpowers/specs/2026-11-14-reeve-design.md) (Chinese).
@@ -45,7 +44,7 @@ make build        # build the frontend, then bundle everything into bin/reeve
 ./bin/reeve serve # foreground, listens on 127.0.0.1:18800 by default
 ```
 
-`serve` prints the console URL (<http://127.0.0.1:18800/>) and tries to open a browser. The first run generates an access token at `~/.reeve/token` (`0600`); **loopback requests are unauthenticated by design**.
+`serve` prints the console URL (<http://127.0.0.1:18800/>) and tries to open a browser. The first run generates a random initial password and prints it **once** (`~/.reeve/password` stores only a salted hash); **every request requires login, including loopback**. Change it from Settings → Account, or run `reeve passwd` on the server.
 
 Go-only builds compile and run, but the console has no UI:
 
@@ -59,10 +58,10 @@ Then add a model: console → Settings → API channels → OpenAI-compatible Ba
 
 ```bash
 ./bin/reeve serve -addr 0.0.0.0:18800   # reachable on the LAN (no TLS — trusted networks only)
-./bin/reeve pair                        # prints reeve://pair?v=1&host=…&token=…
+./bin/reeve pair                        # prints reeve://pair?v=1&host=… (address only)
 ```
 
-Paste the pair string into the Android client, or turn it into a QR code yourself. See [docs/android.md](docs/android.md).
+The pair string only carries the address; paste it into the Android client or turn it into a QR code yourself, then enter the server password in the app. See [docs/android.md](docs/android.md).
 
 ### Run as a service
 
@@ -74,22 +73,24 @@ Paste the pair string into the Android client, or turn it into a QR code yoursel
 
 The generated unit sets only `REEVE_HOME` and `PATH` — it does **not** listen on other interfaces. To reach it from a phone, add `REEVE_ADDR` as described in [docs/service.md](docs/service.md).
 
+`service install` initializes the instance `env` file from your current shell when it does not exist yet, importing `PATH`, `TZ`, `LANG`/`LC_ALL`, proxy and TLS certificate settings so tasks keep a usable shell environment after the service restarts. Re-import later with `reeve service env refresh`; variables you added by hand are preserved.
+
 ## CLI
 
 | Command | Purpose |
 |---|---|
 | `reeve` / `reeve serve` | Start HTTP + SSE + web console (`-addr` to change the listener) |
-| `reeve pair` | Print the address and pair string for phones |
-| `reeve token show` | Print the current token |
-| `reeve token rotate` | Rotate the token; every paired device must pair again |
+| `reeve pair` | Print the pairing address for phones (no password) |
+| `reeve passwd` | Reset the login password; signs out every logged-in device |
 | `reeve service install\|uninstall\|status` | Manage the user-level service |
+| `reeve service env refresh [--dry-run]` | Import PATH/TZ/proxy/TLS from the current shell into the instance `env` |
 | `reeve version` | Version info |
 
 ## Environment
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `REEVE_HOME` | `~/.reeve` | Data dir: token, `master.key`, per-bot event logs and workspaces |
+| `REEVE_HOME` | `~/.reeve` | Data dir: `password` (hash), `session.key`, `master.key`, per-bot event logs and workspaces |
 | `REEVE_ADDR` | `127.0.0.1:18800` | Listen address (same as `serve -addr`) |
 | `REEVE_MASTER_KEY` | `$REEVE_HOME/master.key` | Vault master key, may be injected |
 | `WEB_DIR` | embedded | Override the web assets with a directory (development) |

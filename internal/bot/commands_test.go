@@ -82,7 +82,7 @@ func TestUnknownCommandReturnsHelp(t *testing.T) {
 	}
 }
 
-func TestEnvCommandWritesBothLayers(t *testing.T) {
+func TestEnvCommandWritesInstanceLevel(t *testing.T) {
 	b := newBot(t, t.TempDir(), &fakeAI{agent: blockingAgent})
 	defer b.Close()
 
@@ -90,38 +90,31 @@ func TestEnvCommandWritesBothLayers(t *testing.T) {
 	if !ok || !res.OK {
 		t.Fatalf("/env set A=1 失败：%+v", res)
 	}
-	botEnv, err := b.BotEnv()
+	vars, err := b.InstanceEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if botEnv["A"] != "1" {
-		t.Fatalf("bot 级环境变量缺少 A：%v", botEnv)
+	if vars["A"] != "1" {
+		t.Fatalf("实例级环境变量缺少 A：%v", vars)
 	}
 	raw := readStream(t, b)
 	if !strings.Contains(raw, `"source":"user"`) || !strings.Contains(raw, `"name":"A"`) {
 		t.Fatalf("缺少 source=user 的审计事件：%s", raw)
 	}
 
-	res, ok = b.CommandLine(context.Background(), "/env set B 2 --global")
+	res, ok = b.CommandLine(context.Background(), "/env set B 2")
 	if !ok || !res.OK {
-		t.Fatalf("/env set B 2 --global 失败：%+v", res)
+		t.Fatalf("/env set B 2 失败：%+v", res)
 	}
-	instance, err := b.InstanceEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if instance["B"] != "2" {
-		t.Fatalf("实例级环境变量缺少 B：%v", instance)
-	}
-	if botEnv, _ = b.BotEnv(); botEnv["B"] != "" {
-		t.Fatalf("--global 不应写 bot 级：%v", botEnv)
+	if vars, _ = b.InstanceEnv(); vars["B"] != "2" {
+		t.Fatalf("实例级环境变量缺少 B：%v", vars)
 	}
 
 	if res, ok = b.CommandLine(context.Background(), "/env unset A"); !ok || !res.OK {
 		t.Fatalf("/env unset A 失败：%+v", res)
 	}
-	if botEnv, _ = b.BotEnv(); botEnv["A"] != "" {
-		t.Fatalf("unset 后 bot 级仍有 A：%v", botEnv)
+	if vars, _ = b.InstanceEnv(); vars["A"] != "" {
+		t.Fatalf("unset 后实例级仍有 A：%v", vars)
 	}
 }
 

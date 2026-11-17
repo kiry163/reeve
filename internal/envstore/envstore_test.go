@@ -49,8 +49,8 @@ func TestValidValueRejectsControlAndTooLong(t *testing.T) {
 
 func TestMergeOverrideAndUnset(t *testing.T) {
 	base := []string{"PATH=/usr/bin", "A=base", "B=keep"}
-	got := Merge(base, map[string]string{"A": "bot", "C": "new"}, map[string]string{"C": "call", "B": ""})
-	want := []string{"PATH=/usr/bin", "A=bot", "C=call"}
+	got := Merge(base, map[string]string{"A": "instance", "C": "new"}, map[string]string{"C": "call", "B": ""})
+	want := []string{"PATH=/usr/bin", "A=instance", "C=call"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -129,15 +129,11 @@ func TestInstanceSaveIsSortedAndCreatesDir(t *testing.T) {
 	}
 }
 
-func TestLoadMissingFilesGiveEmptyMap(t *testing.T) {
+func TestLoadMissingFileGivesEmptyMap(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nope")
-	inst, err := LoadInstance(dir)
-	if err != nil || inst == nil || len(inst) != 0 {
-		t.Fatalf("缺失的实例级 env 应返回空 map 且无错误，得到 %v %v", inst, err)
-	}
-	bot, err := LoadBot(dir)
-	if err != nil || bot == nil || len(bot) != 0 {
-		t.Fatalf("缺失的 bot env.json 应返回空 map 且无错误，得到 %v %v", bot, err)
+	vars, err := LoadInstance(dir)
+	if err != nil || vars == nil || len(vars) != 0 {
+		t.Fatalf("缺失的实例级 env 应返回空 map 且无错误，得到 %v %v", vars, err)
 	}
 }
 
@@ -151,40 +147,17 @@ func TestLoadInstanceRejectsMalformedLine(t *testing.T) {
 	}
 }
 
-func TestBotRoundTrip(t *testing.T) {
-	botDir := filepath.Join(t.TempDir(), "bots", "helper")
-	vars := map[string]string{"Z_TOKEN": "z", "A_FLAG": "1"}
-	if err := SaveBot(botDir, vars); err != nil {
-		t.Fatal(err)
-	}
-	checkFileMode(t, filepath.Join(botDir, "env.json"), 0o600)
-	got, err := LoadBot(botDir)
-	if err != nil || !reflect.DeepEqual(got, vars) {
-		t.Fatalf("往返失败：%v %v", got, err)
-	}
-}
-
-func TestLoadBotRejectsBrokenJSON(t *testing.T) {
-	botDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(botDir, "env.json"), []byte("{oops"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadBot(botDir); err == nil {
-		t.Fatal("损坏的 env.json 应报错")
-	}
-}
-
 func TestSaveRejectsInvalidVars(t *testing.T) {
 	dir := t.TempDir()
 	if err := SaveInstance(dir, map[string]string{"A-B": "1"}); err == nil {
 		t.Fatal("非法名字不应写盘")
 	}
-	if err := SaveBot(dir, map[string]string{"A": "x\ny"}); err == nil {
+	if err := SaveInstance(dir, map[string]string{"A": "x\ny"}); err == nil {
 		t.Fatal("非法值不应写盘")
 	}
 }
 
-// 实例级 env 按行 trim，存不下首尾空白；不能静默丢，要显式报错并指向 bot 级 env.json。
+// 实例级 env 按行 trim，存不下首尾空白；不能静默丢，要显式报错。
 func TestSaveInstanceRejectsWhitespaceEdges(t *testing.T) {
 	dir := t.TempDir()
 	for _, v := range []string{" x", "x ", " x ", " ", "\t"} {
@@ -194,13 +167,6 @@ func TestSaveInstanceRejectsWhitespaceEdges(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "env")); !os.IsNotExist(err) {
 		t.Fatalf("校验失败不应留下文件：%v", err)
-	}
-	if err := SaveBot(dir, map[string]string{"A": " x "}); err != nil {
-		t.Fatalf("bot 级 env.json 应保留首尾空白：%v", err)
-	}
-	got, err := LoadBot(dir)
-	if err != nil || got["A"] != " x " {
-		t.Fatalf("bot 级往返失败：%v %v", got, err)
 	}
 }
 
@@ -228,7 +194,7 @@ func TestOverlayEmptyValueDeletes(t *testing.T) {
 	}
 }
 
-// 没传调用级变量时原样返回，行为与引入 Overlay 之前一致。
+// 没传调用级变量时原样返回。
 func TestOverlayEmptyCallKeepsBase(t *testing.T) {
 	base := []string{"A=base", "B=keep"}
 	for _, call := range []map[string]string{nil, {}} {
@@ -242,7 +208,7 @@ func TestOverlayEmptyCallKeepsBase(t *testing.T) {
 	}
 }
 
-// 调用级与其他层用同一套校验：非法名字、密钥引用、换行都拒绝，并整体失败。
+// 调用级与实例级用同一套校验：非法名字、密钥引用、换行都拒绝，并整体失败。
 func TestOverlayRejectsInvalidEntries(t *testing.T) {
 	base := []string{"A=base"}
 	for _, c := range []struct{ name, value, hint string }{
@@ -259,5 +225,76 @@ func TestOverlayRejectsInvalidEntries(t *testing.T) {
 		if got != nil {
 			t.Fatalf("%s=%q 被拒绝时不应返回环境列表：%v", c.name, c.value, got)
 		}
+	}
+}
+
+func TestShellEnvOnlyImportsAllowlistedKeys(t *testing.T) {
+	t.Setenv("PATH", "/custom/bin:/usr/bin")
+	t.Setenv("TZ", "UTC")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+	t.Setenv("REEVE_TEST_SECRET", "must-not-import")
+	got := ShellEnv()
+	if got["PATH"] != "/custom/bin:/usr/bin" || got["TZ"] != "UTC" || got["HTTPS_PROXY"] != "http://127.0.0.1:7890" {
+		t.Fatalf("允许列表内的变量应被读取：%v", got)
+	}
+	if _, ok := got["REEVE_TEST_SECRET"]; ok {
+		t.Fatalf("非允许列表变量不应导入：%v", got)
+	}
+}
+
+func TestRefreshInstancePreservesOtherKeys(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveInstance(dir, map[string]string{"CUSTOM": "keep", "PATH": "/old/bin"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", "/new/bin:/usr/bin")
+	t.Setenv("TZ", "Asia/Shanghai")
+	updates, err := RefreshInstance(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updates["PATH"] != "/new/bin:/usr/bin" || updates["TZ"] != "Asia/Shanghai" {
+		t.Fatalf("应返回导入的变量：%v", updates)
+	}
+	vars, err := LoadInstance(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vars["CUSTOM"] != "keep" {
+		t.Fatalf("手动添加的变量应保留：%v", vars)
+	}
+	if vars["PATH"] != "/new/bin:/usr/bin" || vars["TZ"] != "Asia/Shanghai" {
+		t.Fatalf("允许列表变量应更新：%v", vars)
+	}
+}
+
+func TestEnsureInstanceDoesNotOverwriteExisting(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveInstance(dir, map[string]string{"A": "1"}); err != nil {
+		t.Fatal(err)
+	}
+	created, updates, err := EnsureInstance(dir)
+	if err != nil || created || len(updates) != 0 {
+		t.Fatalf("已有文件不应重新初始化：created=%v updates=%v err=%v", created, updates, err)
+	}
+	vars, _ := LoadInstance(dir)
+	if !reflect.DeepEqual(vars, map[string]string{"A": "1"}) {
+		t.Fatalf("已有文件被改动：%v", vars)
+	}
+}
+
+func TestEnsureInstanceCreatesFromShell(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "new")
+	t.Setenv("PATH", "/shell/bin:/usr/bin")
+	created, updates, err := EnsureInstance(dir)
+	if err != nil || !created {
+		t.Fatalf("应新建实例 env：created=%v err=%v", created, err)
+	}
+	if updates["PATH"] != "/shell/bin:/usr/bin" {
+		t.Fatalf("应导入 PATH：%v", updates)
+	}
+	vars, err := LoadInstance(dir)
+	if err != nil || vars["PATH"] != "/shell/bin:/usr/bin" {
+		t.Fatalf("文件内容不对：%v %v", vars, err)
 	}
 }

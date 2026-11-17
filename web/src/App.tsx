@@ -11,7 +11,6 @@ import MessageActions, { Reactions } from './components/MessageActions';
 import OptionCard from './components/OptionCard';
 import SecretCard from './components/SecretCard';
 import TaskDock from './components/TaskDock';
-import Scheduler from './components/Scheduler';
 import ThinkingBlock from './components/ThinkingBlock';
 import WorkingCard from './components/WorkingCard';
 import Sidebar from './components/Sidebar';
@@ -28,7 +27,6 @@ export default function App() {
   const [loadError, setLoadError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [editor, setEditor] = useState<{ profile?: BotProfile } | null>(null);
-  const [schedulerOpen, setSchedulerOpen] = useState(launchAction === 'scheduler');
   const [settingsOpen, setSettingsOpen] = useState(launchAction === 'settings');
   const [activeBotId, setActiveBotId] = useState(() => launchBot ?? localStorage.getItem('reeve-active-bot'));
   const activeBot = bots.find(b => b.id === activeBotId) ?? bots[0];
@@ -47,18 +45,17 @@ export default function App() {
   }, [attempt]);
 
   const handleSelectBot = (id: string) => {
-    setSchedulerOpen(false);
     setActiveBotId(id);
     localStorage.setItem('reeve-active-bot', id);
   };
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-canvas text-fg">
-      <Sidebar bots={bots} activeBotId={activeBot?.id} schedulerActive={schedulerOpen}
-        onSelectBot={handleSelectBot} onOpenScheduler={() => setSchedulerOpen(true)}
+      <Sidebar bots={bots} activeBotId={activeBot?.id}
+        onSelectBot={handleSelectBot}
         onOpenSettings={() => setSettingsOpen(true)} onCreateBot={() => setEditor({})}
         onEditBot={profile => setEditor({ profile })} />
       {activeBot ? (
-        <BotView key={activeBot.id} bot={activeBot} bots={bots} schedulerOpen={schedulerOpen}
+        <BotView key={activeBot.id} bot={activeBot} bots={bots}
           settingsOpen={settingsOpen} onCloseSettings={() => setSettingsOpen(false)}
           modalOpen={editor !== null} />
       ) : (
@@ -86,14 +83,14 @@ export default function App() {
 }
 
 function BotView({ bot, ...props }: {
-  bot: BotProfile; bots: BotProfile[]; schedulerOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
+  bot: BotProfile; bots: BotProfile[]; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
 }) {
   const botAPI = useMemo(() => createBotAPI(bot.id), [bot.id]);
   return <BotContext.Provider value={{ bot, api: botAPI }}><ChatView {...props} /></BotContext.Provider>;
 }
 
-function ChatView({ bots, schedulerOpen, settingsOpen, onCloseSettings, modalOpen }: {
-  bots: BotProfile[]; schedulerOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
+function ChatView({ bots, settingsOpen, onCloseSettings, modalOpen }: {
+  bots: BotProfile[]; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
 }) {
   const { bot, api } = useActiveBot();
   const activeBotName = bot.name;
@@ -143,20 +140,20 @@ function ChatView({ bots, schedulerOpen, settingsOpen, onCloseSettings, modalOpe
   // 快捷键：Esc 停止回复，Ctrl/⌘+K 聚焦输入框
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (settingsOpen || schedulerOpen || modalOpen) return;
+      if (settingsOpen || modalOpen) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); document.getElementById('composer')?.focus(); }
       else if (e.key === 'Escape' && s.busy) { e.preventDefault(); api.stopReply().catch(() => {}); }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [api, s.busy, settingsOpen, schedulerOpen, modalOpen]);
+  }, [api, s.busy, settingsOpen, modalOpen]);
 
   // 新内容出现时，如果用户本来就在底部，就跟着滚到底
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (el && !schedulerOpen && stick.current) el.scrollTop = el.scrollHeight;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
   });
 
   const wrap = async <T,>(p: Promise<T>) => {
@@ -190,8 +187,7 @@ function ChatView({ bots, schedulerOpen, settingsOpen, onCloseSettings, modalOpe
           </div>
         )}
 
-        {schedulerOpen && <Scheduler revision={s.scheduleRevision} />}
-        <div ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }} className={schedulerOpen ? 'hidden' : 'flex-1 overflow-y-auto'}>
+        <div ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }} className="flex-1 overflow-y-auto">
           <main className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 pb-8 pt-8" aria-live="off">
             {s.ready && s.items.length === 0 && <Welcome name={activeBotName} onPick={(t) => send(t).catch(() => {})} />}
             {!s.ready && <div className="flex justify-center pt-[20vh]"><span className="typing"><i /><i /><i /></span></div>}
@@ -206,7 +202,7 @@ function ChatView({ bots, schedulerOpen, settingsOpen, onCloseSettings, modalOpe
           </main>
         </div>
 
-        <div className={schedulerOpen ? 'hidden' : 'dock relative'}>
+        <div className="dock relative">
           <TaskDock tasks={tasks} pos={pos} />
           {error && <p className="mx-auto mb-1.5 max-w-3xl px-4 text-center text-xs text-danger" role="alert">{error}<button onClick={() => setError('')} className="ml-2 text-fg4 underline">知道了</button></p>}
           <Composer name={activeBotName} connected={s.connected && s.ready} chatBusy={s.busy} working={working}
@@ -315,7 +311,6 @@ function Welcome({ name, onPick }: { name: string; onPick: (t: string) => void }
     { icon: FolderSearch, title: '整理工作区', text: '看看工作区里有什么，写一份 notes.md 总结' },
     { icon: SquareTerminal, title: '写代码并运行', text: '写一个 hello.go 并运行它' },
     { icon: ListTodo, title: '先记个待办', text: '帮我记个待办：明天整理 README，先别开始' },
-    { icon: ListTodo, title: '定个提醒', text: '帮我创建一个明天上午 9 点的单次提醒：整理 README' },
   ];
   return (
     <div className="rise flex flex-col items-center px-2 pt-[9vh] text-center">

@@ -2,31 +2,31 @@
 
 reeve 的原生安卓客户端（Kotlin + Jetpack Compose，Material 3），Android 8.0 以上。
 
-当前照 `docs/android-contract.md` 实现：网络层用 reeve 的 Bearer 鉴权，地址与 token 来自配对串
-`reeve://pair?v=1&host=<addr>&token=<token>`，请求带 `Authorization: Bearer <token>`，401 时提示重新配对。
-聊天、命令面板、设置与调度器都走同一套 SSE 事件流归并出的状态。
+当前照 `docs/android-contract.md` 实现：用服务器密码登录，服务端返回设备会话令牌；后续请求带
+`Authorization: Bearer <token>`，401 时提示重新输入密码。配对串 `reeve://pair?v=1&host=<addr>`
+只包含地址。聊天、命令面板与设置都走同一套 SSE 事件流归并出的状态。
 
-## 配对
+## 登录与配对
 
 「设置 › 添加服务器」（首次启动也有入口）提供三种方式：
 
 - **扫码**：粘贴 `reeve pair` 打印的配对串，或用任一二维码生成工具把它变成二维码后扫码
   （首次使用会请求相机权限）；
-- **粘贴配对串**：读剪贴板里的 `reeve://pair?…`，自动填好地址和 token，不是配对串时提示「配对串无效」；
-- **手填**：地址（`IP:端口` 或域名；没写协议时域名按 HTTPS、IP 按 HTTP）加 token。
+- **粘贴配对串**：读剪贴板里的 `reeve://pair?…`，自动填好地址，不是配对串时提示「配对串无效」；
+- **手填**：地址（`IP:端口` 或域名；没写协议时域名按 HTTPS、IP 按 HTTP）加服务器密码。
 
-点「配对」前会先 `GET /api/health` 确认地址可达，再 `GET /api/auth/me` 确认 token
-（`authenticated=true` 或回环 `mode=loopback`）；失败会说明是连不上还是 token 不对。
-同一个 `host:端口` 重新配对会复用原条目并保留 Bot 偏好，不同 host 新增一台。
+点「登录并保存」前会先 `GET /api/health` 确认地址可达，再用密码 `POST /api/auth/login` 换取设备会话，
+最后 `GET /api/auth/me` 确认；失败会说明是连不上、不是 reeve 还是密码不对。
+同一个 `host:端口` 重新登录会复用原条目并保留 Bot 偏好，不同 host 新增一台。
 
-也可以直接点开 `reeve://pair?v=1&host=<addr>&token=<token>` 深链：App 打开预填好的配对页，**不会自动保存**。
+也可以直接点开 `reeve://pair?v=1&host=<addr>` 深链：App 打开预填好地址的配对页，**不会自动保存**。
 外部 App / 网页也能触发这个深链，所以深链来源会在页面顶部显示「这些信息来自外部链接，不是你扫码得到的」
-和完整地址，必须勾选「我已核对地址」才能点「配对」；扫码、粘贴、手填没有这道提示。
+和完整地址，必须勾选「我已核对地址」才能保存；扫码、粘贴、手填没有这道提示。密码不在链接里。
 
-`android:allowBackup="false"`：token 存在明文 SharedPreferences 里，App 不参与云备份，也不能用
+`android:allowBackup="false"`：设备会话令牌存在明文 SharedPreferences 里，App 不参与云备份，也不能用
 `adb backup` 导出数据。
 
-reeve 没有 TLS：明文 HTTP 的 token 和聊天内容在网络上不加密，只适合可信局域网；
+reeve 没有 TLS：明文 HTTP 下登录密码、设备会话令牌和聊天内容在网络上不加密，只适合可信局域网；
 跨网络请用 Tailscale 或 SSH 隧道。
 
 ## 通知与保活
@@ -39,9 +39,9 @@ reeve 没有 TLS：明文 HTTP 的 token 和聊天内容在网络上不加密，
 | `task.completed/failed/cancelled`（含 `task.updated` 终态） | `replies`（DEFAULT） | 任务「x」完成了 / 失败了 / 已取消 |
 | 后台收到新的助手消息 | `replies`（DEFAULT） | 消息摘要（≤120 字） |
 
-- **抑制范围**：该 Bot 的任意页面（聊天、渠道、环境变量、执行器、技能、Bot 编辑）都算「正在看」，都不弹；
+- **抑制范围**：该 Bot 的任意页面（聊天、渠道、执行器、技能、Bot 编辑）都算「正在看」，都不弹；
   前台看别的页面、后台（即使会话还停在那个页面）都提醒。三类各有开关，默认全开。
-- **正文**只放一句摘要，不含 token、不含工具参数原文；摘要在 `notifySummary` 里折叠空白并按 code point 截断到
+- **正文**只放一句摘要，不含会话令牌、不含工具参数原文；摘要在 `notifySummary` 里折叠空白并按 code point 截断到
   120 字符（不切 emoji 的代理对）。
 - **锁屏隐私**：通知是 `VISIBILITY_PRIVATE`，公开版本只有 Bot 名，摘要在锁屏上不显示。
 - **点击**：`PendingIntent` 指向不导出的 `RouteActivity`（`exported=false`、透明无历史），它把
@@ -57,9 +57,7 @@ reeve 没有 TLS：明文 HTTP 的 token 和聊天内容在网络上不加密，
 
 1. **通知不会自动撤销**：审批在别处（网页端）处理掉、任务在 App 里取消之后，之前发出的通知仍留在通知栏，
    需要点开或手动划掉。这么做是为了让通知层不反向依赖 `BotSession` 的状态，也没有「取消通知」的通道。
-2. **`schedule.run` 的提醒复用任务类**：计划认领 `failed`/`needs_verify`/`expired` 的提醒走 `replies` 渠道、
-   受「任务完成、失败或取消」开关控制，没有单独的开关和渠道。
-3. **同一类通知只有最新一条**：同一 Bot 连发两条新回复时，后一条替换前一条（通知栏只留最后一条），
+2. **同一类通知只有最新一条**：同一 Bot 连发两条新回复时，后一条替换前一条（通知栏只留最后一条），
    历史都在聊天页里。
 
 ## 编译 APK

@@ -15,7 +15,7 @@ class CommandFilterTest {
         CommandInfo("help", emptyList(), "列出所有命令", "/help"),
         CommandInfo("model", listOf("m"), "换聊天模型", "/model <名称>"),
         CommandInfo("memory", emptyList(), "查看记忆", "/memory"),
-        CommandInfo("schedule", listOf("cron"), "查看定时计划", "/schedule"),
+        CommandInfo("deploy", listOf("release"), "发布服务", "/deploy"),
     )
 
     @Test
@@ -26,7 +26,7 @@ class CommandFilterTest {
 
     @Test
     fun filtersByAlias() {
-        assertEquals(listOf("schedule"), filterCommands(commands, "cron").map { it.name })
+        assertEquals(listOf("deploy"), filterCommands(commands, "release").map { it.name })
     }
 
     @Test

@@ -23,14 +23,13 @@ reeve 是一个装在**自己机器**上的助理平台，不连任何第三方 
 
 | 能力 | 说明 |
 |---|---|
-| 多 bot | 每个 bot 独立工作区、记忆、密钥、环境变量、模型、定时计划；上限 32 个 |
+| 多 bot | 每个 bot 独立工作区、记忆、密钥、环境变量、模型；上限 32 个 |
 | 执行器 | 内置 agent（任意 OpenAI 兼容模型）为默认，可显式切到 `codex` / `pi` / `omp` 外部 CLI |
 | 审批 | 规则 → 策略 → 卡片；一次批准绑定单次调用，同一任务内相同参数可复用 |
-| 环境变量 | 三层（实例 / bot / 调用），模型可读、写入留审计；密钥不进这三层 |
+| 环境变量 | 实例级 + 调用级，模型可读、写入留审计；注册服务时自动从当前 shell 导入 PATH/时区/代理/TLS；密钥不进入环境变量 |
 | 密钥库 | AES-256-GCM 加密，模型只看到占位符，输出统一脱敏 |
 | 技能 | 本地 `SKILL.md` 索引进系统提示，正文按需读取 |
 | 斜线命令 | 服务端解析，**不进模型上下文**：`/help` `/stop` `/clear` `/model` `/agent` `/env` `/skills` `/context` `/tasks` `/approve` |
-| 定时计划 | 每个 bot 自己的计划（单次 / 每天 / 每周），到点派活 |
 | 常驻服务 | macOS launchd / Linux systemd `--user`，`reeve service install` 一条命令装好 |
 
 ## 架构
@@ -65,7 +64,7 @@ make build        # 构建前端 + 打包成 bin/reeve
 ./bin/reeve serve # 前台启动，默认只监听 127.0.0.1:18800
 ```
 
-启动后会打印网页地址（默认 <http://127.0.0.1:18800/>）并尝试打开浏览器。首次启动自动生成访问 token（`~/.reeve/token`，`0600`）；**本机回环访问免认证**。
+启动后会打印网页地址（默认 <http://127.0.0.1:18800/>）并尝试打开浏览器。首次启动会生成一个随机初始密码并**只打印一次**（`~/.reeve/password` 里只保存加盐哈希）；**所有访问都需要登录，本机也不例外**。登录后可在「设置 › 账号与登录」修改密码，或在服务器上运行 `reeve passwd` 重设。
 
 只装了 Go 工具链也可以构建，但控制台会没有界面（前端是构建时嵌进去的）：
 
@@ -79,10 +78,10 @@ go build ./cmd/reeve
 
 ```bash
 ./bin/reeve serve -addr 0.0.0.0:18800   # 让局域网可达（没有 TLS，只限可信网络）
-./bin/reeve pair                        # 打印配对串：reeve://pair?v=1&host=…&token=…
+./bin/reeve pair                        # 打印配对地址：reeve://pair?v=1&host=…
 ```
 
-配对串可以粘贴进 Android 客户端，或自己转成二维码再扫。客户端构建与连接细节见 [docs/android.md](docs/android.md)。
+配对串只包含地址，可以粘贴进 Android 客户端，或自己转成二维码再扫；客户端打开后输入服务器密码登录。客户端构建与连接细节见 [docs/android.md](docs/android.md)。
 
 ### 装成常驻服务
 
@@ -94,22 +93,24 @@ go build ./cmd/reeve
 
 服务定义只设 `REEVE_HOME` 与 `PATH`，**不会自动对外监听**；要让手机直连，按 [docs/service.md](docs/service.md) 在服务定义里加 `REEVE_ADDR`。
 
+`service install` 会在实例 `env` 文件不存在时，从当前 shell 导入 `PATH`、`TZ`、`LANG`/`LC_ALL`、代理与 TLS 证书设置，保证后台服务重启后任务仍能用到用户 shell 的关键环境。之后可用 `reeve service env refresh` 重新导入；其他手动添加的变量不会被删除。
+
 ## 命令行
 
 | 命令 | 作用 |
 |---|---|
 | `reeve` / `reeve serve` | 启动 HTTP + SSE + 网页（`-addr` 指定监听地址） |
-| `reeve pair` | 打印手机连接用的地址与配对串 |
-| `reeve token show` | 打印当前 token |
-| `reeve token rotate` | 轮换 token，所有已登录设备立即失效 |
+| `reeve pair` | 打印手机连接用的配对地址（不含密码） |
+| `reeve passwd` | 重设登录密码，所有已登录设备立即失效 |
 | `reeve service install\|uninstall\|status` | 安装/卸载/查询用户级常驻服务 |
+| `reeve service env refresh [--dry-run]` | 从当前 shell 导入 PATH/TZ/代理/TLS 设置到实例 `env` |
 | `reeve version` | 版本信息 |
 
 ## 环境变量
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `REEVE_HOME` | `~/.reeve` | 数据目录：token、`master.key`、每个 bot 的事件日志与工作区 |
+| `REEVE_HOME` | `~/.reeve` | 数据目录：`password`（哈希）、`session.key`、`master.key`、每个 bot 的事件日志与工作区 |
 | `REEVE_ADDR` | `127.0.0.1:18800` | 监听地址（等价于 `serve -addr`） |
 | `REEVE_MASTER_KEY` | 读 `$REEVE_HOME/master.key` | 密钥库主密钥；也可由外部注入 |
 | `WEB_DIR` | 内嵌前端 | 指向一个目录以覆盖网页资源（开发时用） |
@@ -117,20 +118,19 @@ go build ./cmd/reeve
 ## 目录结构
 
 ```
-cmd/reeve/            入口与子命令（serve / pair / token / service / version）
+cmd/reeve/            入口与子命令（serve / pair / passwd / service / version）
 cmd/fakeai/           冒烟测试用的假模型服务
 internal/bot/store.go 事件日志、启动重放、SSE 广播与游标补发
-internal/bot/         聊天层、监工、任务、审批、定时、记忆、bot 注册表、人设
+internal/bot/         聊天层、监工、任务、审批、记忆、bot 注册表、人设
 internal/exec/        外部执行器契约；internal/exec/cli/ 是 codex / pi / omp 适配器
 internal/builtin/     内置 agent 循环、工具注册表、上下文压缩
-internal/envstore/    三层环境变量、合并顺序、校验
+internal/envstore/    实例级环境变量、shell 导入、合并与校验
 internal/envx/        从子进程环境里剔除密钥与厂商 Key
-internal/scheduler/   定时计划（单次 / 每天 / 每周）与派发
 internal/atomicfile/  原子写文件
 internal/vault/       密钥库（AES-256-GCM、占位符替换、输出脱敏）
 internal/skills/      SKILL.md 扫描与索引
 internal/commands/    斜线命令注册表与执行
-internal/auth/        token、Cookie 会话、限速
+internal/auth/        密码哈希、会话令牌、限速
 internal/service/     launchd / systemd 服务定义生成与安装
 web/                  React 网页（构建产物嵌入二进制）
 android/              Kotlin + Compose 客户端

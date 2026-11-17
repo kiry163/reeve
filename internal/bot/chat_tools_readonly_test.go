@@ -24,7 +24,7 @@ func TestChatLayerHasNoWriteOrExecTools(t *testing.T) {
 			t.Fatalf("聊天层不应暴露 %s", banned)
 		}
 	}
-	for _, need := range []string{"start_task", "read_file", "list_dir", "search_files", "list_schedules", "list_env", "ask_user"} {
+	for _, need := range []string{"start_task", "read_file", "list_dir", "search_files", "list_env", "ask_user"} {
 		if !got[need] {
 			t.Fatalf("聊天层应保留 %s", need)
 		}
@@ -48,15 +48,18 @@ func TestChatListEnvHidesSecrets(t *testing.T) {
 	if err := b.vault.Set("API_TOKEN", "s3cret-value", "测试用", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.SetBotEnv("BOT_VAR", "bv", "test"); err != nil {
+	if err := b.SetInstanceEnv("INSTANCE_VAR", "iv", "test"); err != nil {
 		t.Fatal(err)
 	}
 	out, err := chatTool(t, b, "list_env").Execute(context.Background(), builtin.ToolEnv{}, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "BOT_VAR=bv") {
-		t.Errorf("list_env 应输出 bot 级变量：\n%s", out)
+	if !strings.Contains(out, "INSTANCE_VAR=iv") {
+		t.Errorf("list_env 应输出实例级变量：\n%s", out)
+	}
+	if strings.Contains(out, "bot 级") {
+		t.Errorf("list_env 不应再输出 bot 级：\n%s", out)
 	}
 	if !strings.HasSuffix(out, "密钥不在环境变量里，只能用 {{secret:NAME}} 引用。") {
 		t.Errorf("末尾应固定提示密钥按名字引用：\n%s", out)
@@ -65,13 +68,13 @@ func TestChatListEnvHidesSecrets(t *testing.T) {
 	// vault 值替换成 [secret:API_TOKEN]，所以只要实现真的读过 vault，这里必红。
 	assertNoSecret(t, "list_env 输出", out)
 
-	// 更硬的证明：绕开聊天层 wrapper，直接看数据源。EnvReport 的输入来自 b.View()，
+	// 更硬的证明：绕开聊天层 wrapper，直接看数据源。EnvReport 的输入来自 b.InstanceEnv()，
 	// 其中本来就不该有密钥，因此不用脱敏也找不到密钥值或密钥名。
-	instance, botVars, err := b.View()
+	instance, err := b.InstanceEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertNoSecret(t, "EnvReport 数据源", builtin.EnvReport(instance, botVars))
+	assertNoSecret(t, "EnvReport 数据源", builtin.EnvReport(instance))
 }
 
 // assertNoSecret 断言文本里没有测试密钥的值、名字或脱敏标记。

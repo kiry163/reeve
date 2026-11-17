@@ -1,6 +1,6 @@
 import { ArrowUpRight, BookOpen, Braces, Check, CircleAlert, Cpu, KeyRound, LogOut, Plug, RefreshCw, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, createSettingsAPI, type AuthInfo, type BotProfile, type SettingsAPI, type UpdateStatus } from '../api';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { api, createSettingsAPI, type BotProfile, type SettingsAPI, type UpdateStatus } from '../api';
 import BotModelSettings from './BotModelSettings';
 import ChannelsPage from './ChannelsPage';
 import EnvPanel from './EnvPanel';
@@ -24,13 +24,9 @@ export default function SettingsDialog({ onClose, bots, initialBot, onSettingsSa
   const [tab, setTab] = useState<Tab>('models');
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [auth, setAuth] = useState<AuthInfo>();
   const [selectedBot, setSelectedBot] = useState(initialBot);
   const bot = bots.find(b => b.id === selectedBot) ?? bots[0];
   const target = useMemo(() => createSettingsAPI(bot?.id ?? 'main'), [bot?.id]);
-  const showAccount = auth?.enabled;
-
-  useEffect(() => { api.me().then(setAuth).catch(() => {}); }, []);
 
   useEffect(() => {
     const el = dialog.current;
@@ -70,7 +66,7 @@ export default function SettingsDialog({ onClose, bots, initialBot, onSettingsSa
           {navButton('env', <Braces size={16} aria-hidden="true" />, '环境变量')}
           {navButton('skills', <BookOpen size={15} aria-hidden="true" />, '技能')}
           {navButton('update', <RefreshCw size={15} aria-hidden="true" />, '版本更新')}
-          {showAccount && navButton('account', <KeyRound size={15} aria-hidden="true" />, '账号与登录')}
+          {navButton('account', <KeyRound size={15} aria-hidden="true" />, '账号与登录')}
         </nav>
       </aside>
       <button type="button" className="settings-close" aria-label="关闭设置" disabled={saving} onClick={close}>
@@ -87,7 +83,7 @@ export default function SettingsDialog({ onClose, bots, initialBot, onSettingsSa
             onDirty={setDirty} onSaved={onSettingsSaved} />}
         </section>
         <section id="settings-env" className="settings-pane" hidden={tab !== 'env'} aria-labelledby="settings-env-title">
-          {tab === 'env' && <EnvPanel key={bot?.id ?? 'main'} target={target} bot={bot} saving={saving} setSaving={setSaving} onDirty={setDirty} />}
+          {tab === 'env' && <EnvPanel saving={saving} setSaving={setSaving} onDirty={setDirty} />}
         </section>
         <section id="settings-skills" className="settings-pane" hidden={tab !== 'skills'} aria-labelledby="settings-skills-title">
           {tab === 'skills' && <SkillsPanel key={bot?.id ?? 'main'} target={target} bot={bot} />}
@@ -95,9 +91,9 @@ export default function SettingsDialog({ onClose, bots, initialBot, onSettingsSa
         <section id="settings-update" className="settings-pane" hidden={tab !== 'update'} aria-labelledby="settings-update-title">
           {tab === 'update' && <UpdatePanel target={target} />}
         </section>
-        {showAccount && <section id="settings-account" className="settings-pane" hidden={tab !== 'account'} aria-labelledby="settings-account-title">
-          <AccountPanel />
-        </section>}
+        <section id="settings-account" className="settings-pane" hidden={tab !== 'account'} aria-labelledby="settings-account-title">
+          {tab === 'account' && <AccountPanel />}
+        </section>
       </div>
     </dialog>
   );
@@ -158,6 +154,31 @@ function UpdatePanel({ target }: { target: SettingsAPI }) {
 }
 
 function AccountPanel() {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>();
+
+  async function change(e: FormEvent) {
+    e.preventDefault();
+    if (next !== confirm) {
+      setFeedback({ error: true, text: '两次输入的新密码不一致' });
+      return;
+    }
+    setBusy(true);
+    setFeedback(undefined);
+    try {
+      await api.changePassword(current, next);
+      setFeedback({ error: false, text: '密码已更新；其他设备上的登录已失效。' });
+      setCurrent(''); setNext(''); setConfirm('');
+    } catch (err) {
+      setFeedback({ error: true, text: message(err) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function logout() {
     await api.logout().catch(() => {});
     location.assign('/login');
@@ -166,7 +187,28 @@ function AccountPanel() {
   return (
     <>
       <h3 id="settings-account-title">账号与登录</h3>
-      <p className="settings-description">服务器模式下，打开管理页面需要登录。</p>
+      <p className="settings-description">所有环境（包括本机）都需要密码登录。修改密码会让其他设备上的登录立即失效。</p>
+      <form className="settings-fields" onSubmit={change}>
+        <div className="settings-field">
+          <label htmlFor="account-current">当前密码</label>
+          <input id="account-current" type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} required />
+        </div>
+        <div className="settings-field">
+          <label htmlFor="account-next">新密码</label>
+          <input id="account-next" type="password" autoComplete="new-password" minLength={8} value={next} onChange={(e) => setNext(e.target.value)} required />
+          <span className="settings-field-hint">至少 8 个字符。</span>
+        </div>
+        <div className="settings-field">
+          <label htmlFor="account-confirm">确认新密码</label>
+          <input id="account-confirm" type="password" autoComplete="new-password" minLength={8} value={confirm} onChange={(e) => setConfirm(e.target.value)} required />
+        </div>
+        {feedback && <FeedbackLine feedback={feedback} />}
+        <div className="settings-actions">
+          <button type="submit" className="settings-button settings-primary" disabled={busy}>
+            {busy ? '保存中…' : '修改密码'}
+          </button>
+        </div>
+      </form>
       <div className="settings-actions">
         <button type="button" className="settings-button" onClick={logout}><LogOut size={14} aria-hidden="true" />退出登录</button>
       </div>

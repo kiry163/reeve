@@ -14,7 +14,7 @@ const val CH_REPLIES = "replies"
 /** `keepalive`：前台服务的常驻通知（MIN、无角标）。 */
 const val CH_KEEPALIVE = "keepalive"
 
-/** 通知正文最多这么多字符；不含 token，也不放工具参数原文。 */
+/** 通知正文最多这么多字符；不含会话令牌，也不放工具参数原文。 */
 const val SUMMARY_LIMIT = 120
 
 /** 审批提醒的固定文案：不带工具名、参数和风险等级以外的任何原始内容。 */

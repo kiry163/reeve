@@ -26,12 +26,10 @@ func TestClientsShareAuthenticatedMessagesAndResumeEvents(t *testing.T) {
 	defer b.Close()
 	bs := &Bots{main: b, runtimes: map[string]*Bot{defaultBotID: b},
 		handlers: map[string]*botEndpoint{defaultBotID: {Handler: b.Handler("")}}}
-	tok, _, err := auth.EnsureToken(b.cfg.DataDir)
-	if err != nil {
+	if err := auth.SetPassword(b.cfg.DataDir, "test-password"); err != nil {
 		t.Fatal(err)
 	}
-	// LoopbackFree 关掉，这样 401 边界仍然会被真实校验（httptest 的来源是回环）。
-	guard := &auth.Guard{Token: tok, LoopbackFree: false, SessionTTL: time.Hour}
+	guard := &auth.Guard{DataDir: b.cfg.DataDir, SessionTTL: time.Hour}
 	srv := httptest.NewServer(guard.Middleware(bs.Handler(nil)))
 	defer srv.Close()
 
@@ -67,6 +65,20 @@ func TestClientsShareAuthenticatedMessagesAndResumeEvents(t *testing.T) {
 		}
 		return ""
 	}
+	login := func(client *http.Client, password string, want int) (string, string) {
+		t.Helper()
+		resp := request(client, srv.URL, "POST", "/api/auth/login", `{"password":"`+password+`"}`, "", want)
+		if want != 200 {
+			return "", ""
+		}
+		var out struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || out.Token == "" {
+			t.Fatalf("login response: %+v %v", out, err)
+		}
+		return cookieFrom(resp), out.Token
+	}
 	native := &http.Client{Timeout: 30 * time.Second}
 	request(native, srv.URL, "GET", "/api/health", "", "", 200).Body.Close()
 	request(native, srv.URL, "GET", "/api/capabilities", "", "", 401).Body.Close()
@@ -75,15 +87,14 @@ func TestClientsShareAuthenticatedMessagesAndResumeEvents(t *testing.T) {
 		jar, _ := cookiejar.New(nil)
 		clients[i] = &http.Client{Jar: jar, Timeout: 30 * time.Second}
 	}
-	cookie := ""
+	cookie, token := "", ""
 	for i, client := range clients {
-		resp := request(client, srv.URL, "POST", "/api/auth/token", `{"token":"`+tok+`"}`, "", 200)
+		c, tok := login(client, "test-password", 200)
 		if i == 2 {
-			cookie = cookieFrom(resp)
+			cookie, token = c, tok
 		}
-		resp.Body.Close()
 	}
-	if cookie == "" {
+	if cookie == "" || token == "" {
 		t.Fatal("native login did not return a session")
 	}
 	resp := request(native, srv.URL, "GET", "/api/capabilities", "", cookie, 200)
@@ -95,6 +106,19 @@ func TestClientsShareAuthenticatedMessagesAndResumeEvents(t *testing.T) {
 		t.Fatalf("invalid capabilities: %+v, %v", caps, err)
 	}
 	resp.Body.Close()
+	// Bearer 会话令牌与 Cookie 是同一种凭据。
+	if req, _ := http.NewRequest("GET", srv.URL+"/api/capabilities", nil); req != nil {
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := native.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("Bearer 会话令牌应 200，得到 %d", resp.StatusCode)
+		}
+	}
+
 	base := "/api/bots/main"
 	for i, client := range clients {
 		credential := ""
@@ -160,21 +184,42 @@ func TestClientsShareAuthenticatedMessagesAndResumeEvents(t *testing.T) {
 		}
 	}
 
-	// token 轮换后：旧 token 换不到会话，旧 Cookie 失效，新 token 正常工作。
-	next, err := auth.RotateToken(b.cfg.DataDir)
-	if err != nil {
-		t.Fatal(err)
+	// 改密后：旧 Cookie / 旧 Bearer 立即失效，新密码可登录，新会话可用。
+	resp = request(native, srv.URL, "POST", "/api/auth/password",
+		`{"current_password":"test-password","new_password":"next-password"}`, cookie, 200)
+	freshCookie := cookieFrom(resp)
+	var fresh struct {
+		Token string `json:"token"`
 	}
-	guard2 := &auth.Guard{Token: next, LoopbackFree: false, SessionTTL: time.Hour}
-	srv2 := httptest.NewServer(guard2.Middleware(bs.Handler(nil)))
-	defer srv2.Close()
-	request(native, srv2.URL, "POST", "/api/auth/token", `{"token":"`+tok+`"}`, "", 401).Body.Close()
-	request(native, srv2.URL, "GET", base+"/info", "", cookie, 401).Body.Close()
-	resp = request(native, srv2.URL, "POST", "/api/auth/token", `{"token":"`+next+`"}`, "", 200)
-	fresh := cookieFrom(resp)
+	if err := json.NewDecoder(resp.Body).Decode(&fresh); err != nil || fresh.Token == "" {
+		t.Fatalf("改密响应不对：%v", err)
+	}
 	resp.Body.Close()
-	if fresh == "" {
-		t.Fatal("轮换后的 token 应能换到新会话")
+	if freshCookie == "" {
+		t.Fatal("改密应刷新会话 Cookie")
 	}
-	request(native, srv2.URL, "GET", base+"/info", "", fresh, 200).Body.Close()
+	request(native, srv.URL, "GET", base+"/info", "", cookie, 401).Body.Close()
+	introspect := func(headers map[string]string) int {
+		t.Helper()
+		req, _ := http.NewRequest("GET", srv.URL+base+"/info", nil)
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		req.Header.Set("Origin", srv.URL)
+		r, err := native.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		return r.StatusCode
+	}
+	if got := introspect(map[string]string{"Authorization": "Bearer " + token}); got != 401 {
+		t.Fatalf("改密后旧 Bearer 应 401，得到 %d", got)
+	}
+	request(native, srv.URL, "GET", base+"/info", "", freshCookie, 200).Body.Close()
+	if got := introspect(map[string]string{"Authorization": "Bearer " + fresh.Token}); got != 200 {
+		t.Fatalf("改密后的新 Bearer 应 200，得到 %d", got)
+	}
+	login(native, "test-password", 401)
+	login(native, "next-password", 200)
 }

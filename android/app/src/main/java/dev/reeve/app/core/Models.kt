@@ -212,7 +212,6 @@ data class BotState(
     val toolLabel: String = "",
     val lastSeq: Long = 0,
     val ready: Boolean = false,
-    val scheduleRevision: Int = 0,
 )
 
 /** GET /api/commands 里的一条斜线命令定义 */
@@ -324,21 +323,6 @@ data class ChannelsView(val providers: List<ApiChannel> = emptyList(), val usage
         fun from(j: JSONObject) = ChannelsView(
             providers = j.arr("providers").objects().map(ApiChannel::from),
             usage = j.arr("usage").objects().map(ChannelUse::from),
-        )
-    }
-}
-
-data class Schedule(
-    val id: String, val title: String, val enabled: Boolean, val kind: String,
-    val hour: Int?, val minute: Int?, val weekdays: List<Int>,
-    val nextRun: String?, val lastStatus: String?, val atLocal: String?,
-) {
-    companion object {
-        fun from(j: JSONObject) = Schedule(
-            id = j.str("id"), title = j.str("title"), enabled = j.bool("enabled"), kind = j.str("kind"),
-            hour = j.num("hour")?.toInt(), minute = j.num("minute")?.toInt(),
-            weekdays = (0 until j.arr("weekdays").length()).map { j.arr("weekdays").optInt(it) },
-            nextRun = j.strOrNull("next_run_local"), lastStatus = j.strOrNull("last_status"), atLocal = j.strOrNull("at_local"),
         )
     }
 }
