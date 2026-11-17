@@ -19,6 +19,13 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-java@v4
+        # Android Gradle Plugin 8.x 只支持 JDK 17–21；ubuntu-latest 默认的
+        # JDK 25 会让 Gradle 在配置阶段直接失败（错误信息只有一个版本号）。
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
       - name: Test
         run: go build ./... && go vet ./... && go test ./...
       - name: Write Android keystore
