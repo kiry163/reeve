@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="reeve">
+  <style>
+    .plate { fill: #faf9f5; }
+    .ring { fill: none; stroke: #2f7d52; stroke-width: 2.6; }
+    .dot { fill: #2f7d52; }
+    @media (prefers-color-scheme: dark) {
+      .plate { fill: #262624; }
+      .ring { stroke: #62b486; }
+      .dot { fill: #62b486; }
+    }
+  </style>
+  <rect class="plate" width="32" height="32" rx="8" />
+  <circle class="ring" cx="16" cy="16" r="8.6" />
+  <circle class="dot" cx="16" cy="16" r="3.2" />
+</svg>

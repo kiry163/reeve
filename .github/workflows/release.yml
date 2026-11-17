@@ -1,0 +1,75 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  # 构建与测试不需要写权限；产物通过 artifact 传给 publish job。
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Test
+        run: go build ./... && go vet ./... && go test ./...
+      - name: Write Android keystore
+        # 从 base64 secret 落盘到 RUNNER_TEMP；不写 GITHUB_ENV，路径只在下面的
+        # Release step 里按约定路径使用。未配置时什么也不做，release.sh 会因此
+        # 跳过 APK（不会发布 debug 签名包）。
+        env:
+          KEYSTORE_BASE64: ${{ secrets.REEVE_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "未配置 REEVE_ANDROID_KEYSTORE_BASE64，跳过 APK 签名（不会发布 debug 签名包）。"
+            exit 0
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/reeve-release.p12"
+          chmod 600 "$RUNNER_TEMP/reeve-release.p12"
+      - name: Release
+        # 签名口令/别名只注入这一步，不污染同一 job 的 npm ci / Gradle 环境。
+        # keystore 路径由本 step 的 shell 自行 export，用完即弃。
+        env:
+          REEVE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.REEVE_ANDROID_KEYSTORE_PASSWORD }}
+          REEVE_ANDROID_KEY_ALIAS: ${{ secrets.REEVE_ANDROID_KEY_ALIAS }}
+          REEVE_ANDROID_KEY_PASSWORD: ${{ secrets.REEVE_ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -f "$RUNNER_TEMP/reeve-release.p12" ]; then
+            export REEVE_ANDROID_KEYSTORE="$RUNNER_TEMP/reeve-release.p12"
+          fi
+          ./scripts/release.sh "${GITHUB_REF_NAME#v}"
+      - name: Remove Android keystore
+        # 无论前面成功还是失败都清掉临时 keystore。
+        if: always()
+        run: rm -f "$RUNNER_TEMP/reeve-release.p12"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # 只有这个 job 能写 Release；environment 需在仓库设置里配置人工批准，
+  # 这样打 tag 不会自动变成对外发布。
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    environment: release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

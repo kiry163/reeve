@@ -1,0 +1,222 @@
+package bot
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
+	"testing"
+)
+
+const cliTestPrompt = "测试 CLI 参数：引号 \" 和 & | %PATH% $(echo no)"
+const cliTestReply = "CLI 已收到完整任务"
+
+// Reuse the test executable as a local CLI fixture. No real credentials or
+// vendor service are needed to exercise the HTTP-to-process path on Windows.
+func TestMain(m *testing.M) {
+	id := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
+	if os.Getenv("REEVE_CLI_TEST") == "1" && slices.Contains([]string{"codex", "claude", "pi", "omp", "grok", "agy"}, id) {
+		input, err := io.ReadAll(os.Stdin)
+		if err != nil || !strings.Contains(string(input)+strings.Join(os.Args[1:], " "), cliTestPrompt) {
+			fmt.Fprintln(os.Stderr, "prompt missing or altered")
+			os.Exit(1)
+		}
+		if _, err := os.Stat("cli-workspace"); err != nil {
+			fmt.Fprintln(os.Stderr, "wrong workspace")
+			os.Exit(1)
+		}
+		switch id {
+		case "pi":
+			// 真的走一遍 reeve 的本机网关：临时配置里只有网关地址和 $REEVE_GATEWAY_TOKEN，没有真实 Key
+			if err := piFixture(); err != nil {
+				fmt.Fprintln(os.Stderr, "pi fixture:", err)
+				os.Exit(1)
+			}
+		case "codex":
+			fmt.Println(`{"type":"item.completed","item":{"type":"command_execution","text":"ignore this"}}`)
+			fmt.Printf("{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":%q}}\n", cliTestReply)
+		case "agy":
+			fmt.Printf("{\"status\":\"SUCCESS\",\"response\":%q}\n", cliTestReply)
+		default:
+			fmt.Println(cliTestReply)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+const piTestKey = "sk-real-upstream-key"
+
+// piFixture 模拟 Pi：读 PI_CODING_AGENT_DIR/models.json，用 REEVE_GATEWAY_TOKEN 调本机网关，打印回复。
+func piFixture() error {
+	args := strings.Join(os.Args[1:], " ")
+	if !strings.Contains(args, "--provider reeve --model pi-model") {
+		return fmt.Errorf("wrong args: %s", args)
+	}
+	dir, token := os.Getenv("PI_CODING_AGENT_DIR"), os.Getenv("REEVE_GATEWAY_TOKEN")
+	raw, err := os.ReadFile(filepath.Join(dir, "models.json"))
+	if err != nil || token == "" {
+		return fmt.Errorf("config missing: %v", err)
+	}
+	if strings.Contains(string(raw), piTestKey) || strings.Contains(strings.Join(os.Environ(), "\n"), piTestKey) {
+		return fmt.Errorf("real key leaked to the CLI")
+	}
+	var cfg struct {
+		Providers map[string]struct {
+			BaseURL string `json:"baseUrl"`
+			APIKey  string `json:"apiKey"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil || cfg.Providers["reeve"].APIKey != "$REEVE_GATEWAY_TOKEN" {
+		return fmt.Errorf("bad models.json: %s", raw)
+	}
+	body := `{"model":"some-other-model","messages":[{"role":"user","content":"hi"}]}`
+	req, _ := http.NewRequest("POST", cfg.Providers["reeve"].BaseURL+"/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Choices []struct {
+			Message struct{ Content string } `json:"message"`
+		} `json:"choices"`
+	}
+	if resp.StatusCode != 200 || json.NewDecoder(resp.Body).Decode(&out) != nil || len(out.Choices) == 0 {
+		return fmt.Errorf("gateway status %d", resp.StatusCode)
+	}
+	fmt.Println(out.Choices[0].Message.Content)
+	return nil
+}
+
+func TestAgentConnectionsExecuteAndSurviveRestart(t *testing.T) {
+	dir, path := t.TempDir(), t.TempDir()
+	t.Setenv("PATH", path)
+	t.Setenv("HOME", t.TempDir()) // CLI 也会在家目录里找，测试不能看到本机真实装的 CLI
+	t.Setenv("NVM_DIR", "")
+	t.Setenv("REEVE_CLI_TEST", "1")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{"codex", "pi", "omp"}
+	for _, id := range ids {
+		name := id
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		if err := os.WriteFile(filepath.Join(path, name), image, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 第三方 API：只认真实 Key，并且只收到设置里选的模型
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Model string }
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer "+piTestKey || req.Model != "pi-model" {
+			http.Error(w, "bad upstream request", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","content":%q}}]}`, cliTestReply)
+	}))
+	defer upstream.Close()
+
+	cfg := Config{DataDir: filepath.Join(dir, "data"), Workspace: filepath.Join(dir, "workspace")}
+	open := func() *Bots {
+		t.Helper()
+		bs, err := OpenBots(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(bs.Close)
+		return bs
+	}
+	bs := open()
+	if err := os.WriteFile(filepath.Join(cfg.Workspace, "cli-workspace"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := func(method, url, body string, code int) string {
+		t.Helper()
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(method, url, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		bs.Handler(nil).ServeHTTP(w, r)
+		if w.Code != code {
+			t.Fatalf("%s %s: got %d, want %d: %s", method, url, w.Code, code, w.Body)
+		}
+		return w.Body.String()
+	}
+	const settings = "/api/settings/connections"
+	const executorsURL = "/api/bots/main/executors"
+	var detected connectionsView
+	if raw := request("GET", settings, "", http.StatusOK); json.Unmarshal([]byte(raw), &detected) != nil ||
+		detected.CLI != "" || len(detected.CLIs) != len(ids) {
+		t.Fatalf("invalid detection result: %s", raw)
+	}
+	for _, c := range detected.CLIs {
+		if !c.Installed {
+			t.Fatalf("%s: wrong detection %+v", c.ID, c)
+		}
+	}
+	request("PUT", executorsURL, `{"allowed":["builtin","nope"],"default":"builtin"}`, http.StatusBadRequest)
+	request("PUT", executorsURL, `{"allowed":["builtin","codex","omp"],"default":"codex"}`, http.StatusOK)
+	request("PUT", executorsURL, `{"allowed":["builtin","codex","omp"],"default":"builtin"}`, http.StatusOK)
+	key := piTestKey
+	pool, _ := json.Marshal(map[string]any{"providers": []APIChannel{
+		{ID: "relay", Name: "Relay", BaseURL: upstream.URL + "/v1", Enabled: true, AuthRequired: true, APIKey: &key, Models: []string{"pi-model"}},
+	}})
+	request("POST", "/api/channels", string(pool), http.StatusOK)
+	request("PUT", executorsURL, `{"allowed":["builtin","pi"],"default":"pi","clis":{"pi":{"cli_channel":"bad channel","cli_model":"pi-model"}}}`, http.StatusBadRequest)
+	request("PUT", executorsURL, `{"allowed":["builtin","pi"],"default":"pi","clis":{"pi":{"cli_channel":"relay","cli_model":"--yolo"}}}`, http.StatusBadRequest)
+	request("PUT", executorsURL, `{"allowed":["builtin","pi"],"default":"pi","clis":{"pi":{"cli_channel":"relay","cli_model":"pi-model"}}}`, http.StatusOK)
+
+	const botPath = "/api/bots/main"
+	run := func(status string) {
+		t.Helper()
+		payload, _ := json.Marshal(map[string]string{"text": cliTestPrompt})
+		request("POST", botPath+"/messages", string(payload), http.StatusOK)
+		var task TaskRec
+		waitFor(t, "CLI task", func() bool {
+			tasks := bs.main.store.Tasks()
+			if len(tasks) == 0 {
+				return false
+			}
+			task = tasks[len(tasks)-1]
+			return task.Executor == "pi"
+		})
+		waitFor(t, "CLI to finish", func() bool {
+			task, _ = bs.main.store.Task(task.ID)
+			return terminal(task.Status)
+		})
+		if task.Status != status || status == "completed" && task.Output != cliTestReply {
+			t.Fatalf("unexpected CLI result: %+v", task)
+		}
+	}
+	run("completed")
+	bs.Close()
+	bs = open()
+	if bs.main.selectedCLI() != "pi" || bs.main.cliOptions("pi").Channel != "relay" {
+		t.Fatal("selection lost on restart")
+	}
+	run("completed") // 重启后网关重新启动，照样能用
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("HOME", t.TempDir()) // CLI 也会在家目录里找，测试不能看到本机真实装的 CLI
+	t.Setenv("NVM_DIR", "")
+	request("PUT", executorsURL, `{"allowed":["builtin","pi"],"default":"builtin","clis":{"pi":{"cli_channel":"relay","cli_model":"pi-model"}}}`, http.StatusOK)
+	if bs.main.selectedCLI() != "" {
+		t.Fatal("could not switch back to built-in Agent")
+	}
+}
