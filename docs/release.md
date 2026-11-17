@@ -1,8 +1,8 @@
 # 发布流程
 
 发布由一个脚本 `scripts/release.sh` 和一个 GitHub Actions 工作流
-`.github/workflows/release.yml` 组成。本地能完整跑通脚本；工作流本身**没有在真实的 GitHub
-Actions 上执行过**，目前只做过 YAML 语法校验（见文末「已知边界」）。
+`.github/workflows/release.yml` 组成。本地能完整跑通脚本；工作流已在 `v0.1.0` 上实际跑通
+（build + publish，含 Android APK），后续发布仍应核对产物（见文末「已知边界」）。
 
 ## 版本规则
 
@@ -142,7 +142,9 @@ APK **在生成校验和之前**放进 `dist/`，所以 `SHA256SUMS` 会包含�
 密钥。
 
 CI 侧：GitHub 托管的 `ubuntu-latest` runner 预装 Android SDK，并设置
-`ANDROID_HOME=/usr/local/lib/android/sdk`。`.github/workflows/release.yml` 的
+`ANDROID_HOME=/usr/local/lib/android/sdk`。工作流用 `actions/setup-java@v4` 把 JDK 固定为
+Temurin 17：runner 默认 JDK 会随镜像升级（`v0.1.0` 首次执行时是 25），而 AGP 8.x 只支持
+17–21，直接用默认 JDK 会在 Gradle 配置阶段失败（错误信息只有一个版本号）。`.github/workflows/release.yml` 的
 `Write Android keystore` step 把 base64 secret 解码到 `$RUNNER_TEMP/reeve-release.p12`；
 紧接着的 `Release` step 发现该文件就导出 `REEVE_ANDROID_KEYSTORE`，三个口令/别名只作为这一个
 step 的 env 注入（不写 `GITHUB_ENV`，也就不会出现在 `npm ci` 或其它步骤的环境里）。step 结束
@@ -198,24 +200,25 @@ gh release upload vX.Y.Z reeve_X.Y.Z_android.apk SHA256SUMS --clobber
 
 ## 已知边界
 
-- **工作流未在真实 Actions 上跑过**。本仓库只做过本地 YAML 解析校验：
+- **工作流已在 `v0.1.0` 上实际跑通**：build 产出四个平台二进制 + 已签名 APK，publish 把五个
+  文件与 `SHA256SUMS` 上传到 Release。后续每次发布仍应人工核对 Release 文件清单与
+  `SHA256SUMS` 一致，并跑一次 `sha256sum -c SHA256SUMS`。
+- **CI 的 JDK 固定为 17**：`ubuntu-latest` 默认 JDK 会随镜像升级（`v0.1.0` 首次执行时是 25），
+  AGP 8.x 只支持 17–21；工作流用 `actions/setup-java@v4` 固定 Temurin 17，不要删掉这一步。
+  本地 YAML 语法仍可预先校验：
 
   ```bash
   python3 -c "import yaml; yaml.safe_load(open('.github/workflows/release.yml'))" && echo yaml-ok
   ```
 
   （本机没装 PyYAML 时先 `pip install pyyaml`，或在临时 venv 里执行同一条命令。）
-
-  各 action 的版本、缓存行为、`GITHUB_TOKEN` 权限、`environment: release` 的人工批准、Release
-  上传结果都未经实际运行验证；第一次 tag 发布后应人工核对 Release 里的文件清单与
-  `SHA256SUMS` 一致（四个平台二进制，配置了 Android 签名 secret 时还有一个 APK），并跑一次
-  `sha256sum -c SHA256SUMS`。
 - **不支持预发布 tag**：没有 `-rc`/`beta` 之类的通道，也无法用 tag 触发「草稿」Release。
 - **APK 取决于签名 secret**：`android/` 已落地，`android/gradlew` 可执行且 `ANDROID_HOME`
   非空时，CI 与本地都会尝试构建 APK；只有签名四件套齐全才会产出并发布，未配置
-  `REEVE_ANDROID_KEYSTORE_BASE64` 等 secret 时 CI 会跳过 APK（其余产物照常发布）。Release 里
-  缺 APK 时按上一节手工补，不要重跑 `release.sh`。
+  `REEVE_ANDROID_KEYSTORE_BASE64` 等 secret 时 CI 会跳过 APK（其余产物照常发布）。`v0.1.0`
+  起四个 secret 已配置；签名密钥与口令必须备份在仓库外，丢失或更换后已安装用户无法覆盖升级。
+  Release 里缺 APK 时按上一节手工补，不要重跑 `release.sh`。
 - **action 未按 commit SHA 固定**：工作流里的 `actions/*` 与 `softprops/action-gh-release@v2`
   都按主版本 tag 引用，没有写成完整 SHA。tag 可以被上游改写，追求可复现/可审计构建时应改为
-  `uses: owner/action@<40 位 SHA>`；本仓库目前只做语法校验，因此这是已知限制。
+  `uses: owner/action@<40 位 SHA>`。
 - `release.sh` 会 `rm -rf dist/`，不要把它当成增量构建目录。
