@@ -6,21 +6,19 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/kiry163/reeve/internal/auth"
 	"github.com/kiry163/reeve/internal/vault"
 )
 
 // redactor 是唯一的脱敏入口，合并三类敏感值：
-//   - 当前访问 token：每次从 <tokenDir>/token 重新读取，所以 token rotate 之后立即生效；
 //   - 主密钥：启动时提供的形式（REEVE_MASTER_KEY 或 data/master.key）以及它的 hex 形式；
-//   - 密钥库里的所有密钥（含 base64 / URL 编码等变体），由 vault 负责。
+//   - 密钥库里的所有密钥（含 base64 / URL 编码等变体），由 vault 负责；
+//   - 本机模型网关签发过的临时令牌。
 //
 // 事件写盘、SSE 推送、聊天层输入/输出、工具输出和检查点都要经过它。
 type redactor struct {
-	vault    *vault.Vault
-	tokenDir string
-	master   []string       // 主密钥需要抹掉的字面形式（都足够长，误伤风险低）
-	gateway  *gatewayTokens // 与所有 Bot 共享：令牌是实例级的，任何一个 Bot 的外部任务都可能把它带进输出
+	vault   *vault.Vault
+	master  []string       // 主密钥需要抹掉的字面形式（都足够长，误伤风险低）
+	gateway *gatewayTokens // 与所有 Bot 共享：令牌是实例级的，任何一个 Bot 的外部任务都可能把它带进输出
 }
 
 // gatewayTokens 是本机模型网关签发过的临时令牌集合。网关是设备上唯一的一个，令牌对所有
@@ -50,7 +48,6 @@ func (s *gatewayTokens) snapshot() []string {
 }
 
 const (
-	tokenMask   = "[访问 token 已隐藏]"
 	masterMask  = "[主密钥已隐藏]"
 	gatewayMask = "[网关令牌已隐藏]"
 )
@@ -66,8 +63,8 @@ func (r *redactor) addGatewayToken(tok string) {
 
 // newRedactor 组装脱敏器。masterRaw 是 REEVE_MASTER_KEY 的原文（可为空）；
 // 无论它是什么形式，真正用来加解密的 32 字节都会以 hex 形式一并脱敏。
-func newRedactor(v *vault.Vault, tokenDir string, key []byte, masterRaw string) *redactor {
-	r := &redactor{vault: v, tokenDir: tokenDir, gateway: &gatewayTokens{}}
+func newRedactor(v *vault.Vault, key []byte, masterRaw string) *redactor {
+	r := &redactor{vault: v, gateway: &gatewayTokens{}}
 	if len(key) == 32 {
 		r.master = append(r.master, hex.EncodeToString(key))
 	}
@@ -86,9 +83,6 @@ func (r *redactor) Redact(s string) string {
 	if r.vault != nil {
 		s = r.vault.Redact(s)
 	}
-	if tok := r.token(); tok != "" {
-		s = strings.ReplaceAll(s, tok, tokenMask)
-	}
 	for _, m := range r.master {
 		s = strings.ReplaceAll(s, m, masterMask)
 	}
@@ -104,18 +98,6 @@ func (r *redactor) RedactBytes(b []byte) []byte {
 		return b
 	}
 	return []byte(r.Redact(string(b)))
-}
-
-// token 读取当前的访问 token；读不到（还没生成）时返回空串，由调用方跳过。
-func (r *redactor) token() string {
-	if r == nil || r.tokenDir == "" {
-		return ""
-	}
-	tok, err := auth.LoadToken(r.tokenDir)
-	if err != nil {
-		return ""
-	}
-	return tok
 }
 
 // guardedSecrets 把 vault 暴露给审批管线的同时，用统一脱敏器处理工具输出

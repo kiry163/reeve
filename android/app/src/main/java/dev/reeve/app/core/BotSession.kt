@@ -66,7 +66,6 @@ class BotSession(
     val thinking: String get() = state.thinking
     val toolLabel: String get() = state.toolLabel
     val ready: Boolean get() = state.ready
-    val scheduleRevision: Int get() = state.scheduleRevision
 
     var connected by mutableStateOf(false)
     var info by mutableStateOf<BotInfo?>(null)
@@ -119,7 +118,7 @@ class BotSession(
                 when (val end = streamOnce()) {
                     End.Unauthorized -> {
                         connected = false
-                        server.markNeedsPairing()
+                        server.markNeedsLogin()
                         return@launch
                     }
                     is End.Dropped -> {
@@ -222,13 +221,6 @@ class BotSession(
                 news(taskNotice(t.title, verb), NewsKind.Task)
             }
         }
-        if (ev.kind == "schedule.run") {
-            val d = ev.data as? JSONObject ?: return
-            val status = d.obj("claim").str("status")
-            if (status == "needs_verify" || status == "failed" || status == "expired") {
-                news("定时计划「${d.obj("plan").str("title")}」：$status", NewsKind.Task)
-            }
-        }
     }
 
     private fun news(text: String, kind: NewsKind) {
@@ -239,8 +231,8 @@ class BotSession(
 
     private suspend fun <T> guarded(block: suspend () -> T): T = try {
         block()
-    } catch (e: NeedsPairing) {
-        server.markNeedsPairing()
+    } catch (e: NeedsLogin) {
+        server.markNeedsLogin()
         throw e
     }
 
@@ -319,15 +311,13 @@ class BotSession(
         ExecutorsConfig.from(client.put("$basePath/executors", config.payload()))
     }
 
-    /** scope = instance（所有 Bot 共用）或 bot（只影响这个 Bot）；返回 ok 与 warnings。 */
-    suspend fun saveEnv(scope: String, vars: Map<String, String>): JSONObject = guarded {
-        val path = if (scope == "instance") "/api/env" else "$basePath/env"
-        client.put(path, envBody(vars))
+    /** 整体替换实例级环境变量（所有 Bot 共用）；返回 ok 与 warnings。 */
+    suspend fun saveEnv(vars: Map<String, String>): JSONObject = guarded {
+        client.put("/api/env", envBody(vars))
     }
 
-    suspend fun loadEnv(scope: String): Map<String, String> = guarded {
-        val path = if (scope == "instance") "/api/env" else "$basePath/env"
-        val vars = client.getObject(path).obj("vars") ?: JSONObject()
+    suspend fun loadEnv(): Map<String, String> = guarded {
+        val vars = client.getObject("/api/env").obj("vars") ?: JSONObject()
         vars.keys().asSequence().associateWith { vars.str(it) }
     }
 
@@ -375,12 +365,6 @@ class BotSession(
         if (!channel.authRequired) body.put("api_key", "") else channel.apiKey?.let { body.put("api_key", it) }
         client.post("/api/settings/test", body).optInt("latency_ms", 0)
     }
-
-    suspend fun schedules(): List<Schedule> = guarded {
-        client.getArray("$basePath/schedules").objects().map(Schedule::from)
-    }
-
-    suspend fun schedule(id: String, action: String): JSONObject = guarded { client.post("$basePath/schedules/$id/$action") }
 
     suspend fun fileBytes(path: String): ByteArray = guarded {
         client.bytes("$basePath/files", mapOf("path" to path, "download" to "1"))

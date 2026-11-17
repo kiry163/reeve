@@ -8,17 +8,24 @@
 
 ## 1. 鉴权
 
+所有环境（包括本机回环）都必须用密码登录；登录换来的会话令牌同时用于网页 Cookie 与 Android Bearer。
+
 | 项 | 值 |
 |---|---|
-| token 文件 | `<DataDir>/token`（`DataDir` = `$REEVE_HOME`，否则 `~/.reeve`），`0600`，32 字节 base64url |
-| 配对串 | `reeve://pair?v=1&host=<addr>&token=<token>` |
-| Bearer | `Authorization: Bearer <token>`（前缀必须字面 `"Bearer "`） |
-| Cookie | `reeve_session`（网页用；Android 不需要） |
-| 回环免认证 | 仅当 Host 与 RemoteAddr 同时是本机；**局域网 IP 与模拟器的 `10.0.2.2` 都不算** |
-| 轮换 | `reeve token rotate` 后旧 token 立即失效 → 401 |
+| 密码哈希 | `<DataDir>/password`（`DataDir` = `$REEVE_HOME`，否则 `~/.reeve`），`0600`，PBKDF2-SHA256 加盐哈希 |
+| 会话密钥 | `<DataDir>/session.key`，32 字节，`0600`；改密时轮换 |
+| 初始密码 | 首次 `serve` / `pair` 生成并只打印一次；`reeve passwd` 可重设 |
+| 登录 | `POST /api/auth/login` `{"password":"…"}` → `200 {"ok":true,"token":"…","expires_at":"…"}` + `Set-Cookie: reeve_session=…` |
+| Bearer | `Authorization: Bearer <token>`（前缀必须字面 `"Bearer "`；token 是登录响应里的会话令牌） |
+| Cookie | `reeve_session`（网页用；HttpOnly、SameSite=Strict） |
+| 有效期 | 30 天；过期或改密后 → 401 |
+| 改密 | `POST /api/auth/password` `{current_password,new_password}`，轮换会话密钥，所有旧会话立即 401 |
+| 配对串 | `reeve://pair?v=1&host=<addr>`（**只含地址**，密码由用户在 App 里输入） |
+| 回环免认证 | 无；局域网、模拟器的 `10.0.2.2` 与本机回环都必须登录 |
 
-`/api/auth/me` → `{"ok":true,"enabled":true,"authenticated":bool,"mode":"loopback|token|session|none"}`。
-未认证访问 `/api/*` → `401 {"error":"需要登录：…"}`。Android 请求**不要**带 `Origin` 头。
+`/api/auth/me` → `{"ok":true,"enabled":true,"authenticated":bool,"mode":"bearer|session|none"}`。
+未认证访问 `/api/*` → `401 {"error":"需要登录：…"}`。Android 请求**不要**带 `Origin` 头；
+登录失败 10 次/5 分钟后返回 `429`。
 
 ---
 
@@ -31,12 +38,16 @@
 | method path | 请求 | 响应 |
 |---|---|---|
 | `GET /api/health` | — | `{"ok":true,"version":"…","api_version":1}` |
+| `GET /api/auth/me` | — | `{"ok":true,"enabled":true,"authenticated":bool,"mode":"bearer\|session\|none"}` |
+| `POST /api/auth/login` | `{"password":"…"}` 或表单 | `{"ok":true,"token":"…","expires_at":"…"}` + `Set-Cookie` |
+| `POST /api/auth/password` | `{current_password,new_password}` | `{"ok":true,"token":"…","expires_at":"…"}` + 新 `Set-Cookie` |
+| `POST /api/auth/logout` | — | `204`（清除 Cookie；Bearer 由客户端自行丢弃） |
 | `GET /api/capabilities` | — | `{"api_version":1,"version":…,"clients":["web","android"],"auth":{…},"events":{"transport":"sse","resume":"Last-Event-ID","heartbeat_sec":20},"limits":{"json_bytes":1048576,"upload_file_bytes":26214400,"upload_request_bytes":27262976,"upload_files":16,"bots":32}}` |
 | `GET /api/bots` | — | `[BotProfile{id,name,instructions,avatarSlot}]` |
 | `POST /api/bots` | `{name,instructions}` | `BotProfile` |
 | `PATCH /api/bots/{id}` | `{name,instructions}` | `BotProfile` |
 | `DELETE /api/bots/{id}?purge=1` | — | `{"ok":true}`（`main` → 400） |
-| `GET /api/env` `PUT /api/env` | PUT `{"vars":{K:V}}`（**整体替换**） | `{"vars":{K:V}}` / `{"ok":bool,"warnings":[…]}` |
+| `GET /api/env` `PUT /api/env` | PUT `{"vars":{K:V}}`（**整体替换**，实例级，所有 Bot 共用） | `{"vars":{K:V}}` / `{"ok":bool,"warnings":[…]}` |
 | `GET /api/commands` | — | `{"commands":[{name,aliases:[],summary,usage}]}` |
 | `GET /api/channels` `POST /api/channels` | `{"providers":[APIChannel]}` | `{"providers":[APIChannel],"usage":[{bot_id,name,chat_provider_id,agent_provider_id,agent_cli}]}` |
 | `GET /api/settings` `POST /api/settings` | `APISettings` | `APISettings` |
@@ -77,12 +88,7 @@
 | `POST B/secrets` | `{request_id?,name,value,description?}` | `{"ok":true,"name":"…"}` |
 | `POST B/secrets/requests/{id}/cancel` | — | `{"ok":true}` |
 
-### 2.4 Bot 级 — 定时计划
-
-`GET B/schedules`、`GET B/schedules/{id}`、`POST B/schedules/{id}/{pause|resume|run|delete}`。
-`Schedule`：`id,title,prompt,enabled,overlap(skip|queue),kind(once|daily|weekly),timezone,hour,minute,weekdays?,at_local?,next_run?,next_run_local?,last_run?,last_run_local?,last_status?,last_task_id?,last_claim?,created_at,updated_at`。
-
-### 2.5 Bot 级 — 设置/执行器/命令/技能/流
+### 2.4 Bot 级 — 设置/执行器/命令/技能/流
 
 | method path | 请求 | 响应 |
 |---|---|---|
@@ -131,12 +137,9 @@ data: {"seq":42,"kind":"message","time":"…","data":{…}}
 | `task.prio` | `{id,prio}` |
 | `task.note` | `{id,text}` |
 | `task.summary` | `{id,status,summary,steps,files?,duration_sec,error?}` |
-| `env.set`/`env.unset` | `{layer(instance|bot),name,source(user|builtin)}`（永不含值） |
+| `env.set`/`env.unset` | `{name,source(user\|builtin)}`（永久只有实例级，永不含值） |
 | `executors.updated` | `{allowed[],default}` |
 | `executors.dropped` | `{kinds[]}` |
-| `schedule.upserted` | `Schedule` |
-| `schedule.deleted` | `{id,title}` |
-| `schedule.run` | `{plan,claim,error?,manual?}` |
 | `agent` | 信封 `{task_id,bot_id,type,time,data}`，见下 |
 
 `agent` 的 `type`：
@@ -177,7 +180,6 @@ data: {"seq":42,"kind":"message","time":"…","data":{…}}
 | 审批 | `pending allow deny expired`；请求体 `decision`: `once session deny`；`scope`: `once session`；`risk`: `read write exec danger` |
 | `Card.status` | `pending answered dismissed` |
 | `SecretReq.status` | `pending saved cancelled` |
-| 计划 `Claim.status` | `claimed dispatched completed failed needs_verify skipped_misfire skipped_overlap expired` |
 | 执行器 kind | `builtin codex pi omp`（任务记录里 builtin 写空串） |
 | `cli_auth` | `subscription env channel`（pi 固定 `channel`） |
 | 消息 `role` | `user assistant notice` |
@@ -194,6 +196,7 @@ data: {"seq":42,"kind":"message","time":"…","data":{…}}
 | Bot 数量 | 32（含 `main`） |
 | 命令行 | 4096 字节 |
 | 登录 body | 4 KiB |
+| 改密 body | 8 KiB |
 | Bot 档案 | 64 KiB |
 
 - 必须是完整 JSON 对象（空 body、裸数组、裸字符串都 400）；`Content-Type` 非 `application/json` → 415。

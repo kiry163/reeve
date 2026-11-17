@@ -15,7 +15,6 @@ class BotViewingTest {
         val pages = listOf(
             Screen.Chat(ref),
             Screen.Channels(ref),
-            Screen.Env(ref),
             Screen.Executors(ref),
             Screen.Skills(ref),
             Screen.BotEditor("srv-1", ref),
@@ -26,12 +25,12 @@ class BotViewingTest {
     @Test
     fun otherPagesDoNot() {
         val pages = listOf(
-            Screen.Home, Screen.Scheduler, Screen.Settings,
+            Screen.Home, Screen.Settings, Screen.Env("srv-1"),
             Screen.Server("srv-1"), Screen.AddServer(), Screen.Appearance, Screen.Notifications,
             // 新建 Bot：还没有 ref
             Screen.BotEditor("srv-1", null),
-            // 未指定 Bot 的环境变量/执行器/技能页
-            Screen.Env(), Screen.Executors(), Screen.Skills(),
+            // 未指定 Bot 的执行器/技能页
+            Screen.Executors(), Screen.Skills(),
         )
         for (page in pages) assertNull(page.toString(), botOf(page))
     }
@@ -49,7 +48,7 @@ class BotViewingTest {
     @Test
     fun missingChatTextReportsRealProblems() {
         assertEquals("这台服务器已移除", missingChatText(null, botKnown = false))
-        assertEquals("token 已失效，需要重新配对", missingChatText(ServerStatus.NeedsPairing, botKnown = true))
+        assertEquals("登录已过期，请重新登录", missingChatText(ServerStatus.NeedsLogin, botKnown = true))
         assertEquals(
             "这个 Bot 现在连不上：连接超时",
             missingChatText(ServerStatus.Offline("连接超时"), botKnown = true),

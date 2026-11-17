@@ -25,8 +25,8 @@ export type APISettings = {
   env_agent_model?: string;
 };
 
-// enabled = 服务器模式（需要登录）；本机模式没有登录。
-export type AuthInfo = { enabled: boolean; authenticated?: boolean };
+// enabled 恒为 true：所有环境都需要密码登录。
+export type AuthInfo = { enabled: boolean; authenticated?: boolean; mode?: 'bearer' | 'session' | 'none' };
 
 export type UpdateStatus = {
   current: string;
@@ -85,12 +85,6 @@ export type AgentConnections = AgentConnection & { clis: AgentCLI[] };
 // 每个 Bot 的执行器白名单与默认执行器；allowed 必须包含 builtin，default 必须在 allowed 内。
 export type ExecutorOptions = { cli_model?: string; cli_auth?: CLIAuth; cli_channel?: string };
 export type Executors = { allowed: string[]; default: string; clis?: Record<string, ExecutorOptions> };
-export type Schedule = {
-  id: string; title: string; prompt: string; enabled: boolean; kind: string; timezone: string;
-  hour?: number; minute?: number; weekdays?: number[]; overlap?: string;
-  next_run?: string; next_run_local?: string; last_run?: string; last_run_local?: string;
-  last_status?: string; last_task_id?: string; at_local?: string;
-};
 
 // ---------- 环境变量、斜线命令、技能索引 ----------
 
@@ -109,7 +103,7 @@ export type SkillInfo = { name: string; description: string; when_to_use: string
 export type SkillIndex = { skills: SkillInfo[]; errors: string[] };
 
 export type State = {
-  items: Item[]; msgs: Record<string, Msg>; tasks: Record<string, Task>; approvals: Record<string, Approval>; scheduleRevision: number;
+  items: Item[]; msgs: Record<string, Msg>; tasks: Record<string, Task>; approvals: Record<string, Approval>;
   streaming: string; toolLabel: string; busy: boolean;
   thinking: string; thinkStart: number; thinkEnd: number; // 聊天层这一轮的思考（流式，临时）
   ready: boolean; connected: boolean; lastSeq: number;
@@ -120,7 +114,7 @@ export type State = {
 type Wire = { seq: number; kind: string; time: string; data: any };
 type AgentEv = { task_id: string; type: string; time: string; data: any };
 
-const empty = (): State => ({ items: [], msgs: {}, tasks: {}, approvals: {}, scheduleRevision: 0, streaming: '', toolLabel: '', busy: false, thinking: '', thinkStart: 0, thinkEnd: 0, ready: false, connected: false, lastSeq: 0, news: 0, lastNews: '' });
+const empty = (): State => ({ items: [], msgs: {}, tasks: {}, approvals: {}, streaming: '', toolLabel: '', busy: false, thinking: '', thinkStart: 0, thinkEnd: 0, ready: false, connected: false, lastSeq: 0, news: 0, lastNews: '' });
 const resetTurn = (s: State) => { s.streaming = ''; s.toolLabel = ''; s.thinking = ''; s.thinkStart = 0; s.thinkEnd = 0; };
 const endThink = (s: State) => { if (s.thinkStart && !s.thinkEnd) s.thinkEnd = Date.now(); };
 const ts = (s?: string) => (s ? new Date(s).getTime() : Date.now());
@@ -131,7 +125,7 @@ export const terminal = (st: string) => st === 'completed' || st === 'failed' ||
 function apply(s: State, ev: Wire) {
   const d = ev.data;
   switch (ev.kind) {
-    case 'replay.done': s.ready = true; s.busy = !!d.busy; s.scheduleRevision++; break;
+    case 'replay.done': s.ready = true; s.busy = !!d.busy; break;
     case 'message': {
       if (d.role === 'notice') break; // 系统通知只给聊天层看
       if (d.hidden) { s.items = s.items.filter((it) => it.id !== d.id); delete s.msgs[d.id]; break; }
@@ -201,18 +195,6 @@ function apply(s: State, ev: Wire) {
       } else {
         s.msgs[id].text = typeof d.text === 'string' ? d.text : s.msgs[id].text;
         s.msgs[id].ok = d.ok !== false;
-      }
-      break;
-    }
-    case 'schedule.upserted':
-    case 'schedule.deleted': {
-      s.scheduleRevision++;
-      break;
-    }
-    case 'schedule.run': {
-      s.scheduleRevision++;
-      if (d.claim?.status === 'needs_verify' || d.claim?.status === 'failed' || d.claim?.status === 'expired') {
-        news(s, `定时计划「${d.plan?.title || ''}」：${d.claim.status}`);
       }
       break;
     }
@@ -370,8 +352,6 @@ export type BotAPI = {
   dismiss: (id: string) => Promise<unknown>;
   saveSecret: (requestId: string, value: string) => Promise<unknown>;
   cancelSecret: (requestId: string) => Promise<unknown>;
-  schedules: (signal?: AbortSignal) => Promise<Schedule[]>;
-  schedule: (id: string, action: 'pause' | 'resume' | 'run' | 'delete') => Promise<unknown>;
   // 所有 Bot 共用的命令定义（输入框的 / 候选）。
   commands: (signal?: AbortSignal) => Promise<CommandInfo[]>;
 };
@@ -404,8 +384,6 @@ export function createBotAPI(botID: string): BotAPI {
     // 密钥值只走这个接口：直接加密落盘，不进聊天记录、事件流或模型上下文
     saveSecret: (requestId: string, value: string) => post(`${base}/secrets`, { request_id: requestId, value }),
     cancelSecret: (requestId: string) => post(`${base}/secrets/requests/${requestId}/cancel`),
-    schedules: (signal?: AbortSignal): Promise<Schedule[]> => get(`${base}/schedules`, signal),
-    schedule: (id: string, action: 'pause' | 'resume' | 'run' | 'delete') => post(`${base}/schedules/${id}/${action}`),
     commands: async (signal?: AbortSignal): Promise<CommandInfo[]> => (await get<{ commands?: CommandInfo[] }>('/api/commands', signal)).commands ?? [],
   };
 }
@@ -438,8 +416,7 @@ export type SettingsAPI = {
   testProvider: (s: APISettings) => Promise<{ latency_ms: number }>;
   checkUpdate: (signal?: AbortSignal) => Promise<UpdateStatus>;
   version: (signal?: AbortSignal) => Promise<string | undefined>;
-  // 设置页的「环境变量」「技能」面板：作用域跟随当前选中的 Bot。
-  env: EnvAPI;
+  // 设置页的「技能」面板：作用域跟随当前选中的 Bot。
   skills: (signal?: AbortSignal) => Promise<SkillIndex>;
 };
 
@@ -470,13 +447,12 @@ export function createSettingsAPI(bot = 'main'): SettingsAPI {
     testProvider: (s: APISettings): Promise<{ latency_ms: number }> => post('/api/channels/test', s),
     checkUpdate: (signal?: AbortSignal): Promise<UpdateStatus> => get('/api/update', signal),
     version: async (signal?: AbortSignal) => (await get<Info>(`${botPath('main')}/info`, signal)).version,
-    env: envAPI(base),
     skills: async (signal?: AbortSignal): Promise<SkillIndex> => skillIndex(await get<SkillIndex>(`${base}/skills`, signal)),
   };
 }
 
 export const api = {
-  // 实例级环境变量：所有 Bot 共用（bot 级见 SettingsAPI.env）。
+  // 实例级环境变量：所有 Bot 共用同一份。
   env: envAPI('/api'),
   bots: (signal?: AbortSignal): Promise<BotProfile[]> => get('/api/bots', signal),
   createBot: (draft: BotDraft): Promise<BotProfile> => post('/api/bots', draft),
@@ -485,6 +461,9 @@ export const api = {
   copyBotSettings: (to: string, from: string): Promise<APISettings> => post(`${botPath(to)}/settings/copy`, { from }),
   botPaths: (id: string): Promise<{ data_dir: string; workspace: string }> => get(`${botPath(id)}/paths`),
   me: (): Promise<AuthInfo> => get('/api/auth/me'),
+  // 修改密码：成功后其他设备上的会话立即失效，当前浏览器会收到新 Cookie。
+  changePassword: (current: string, next: string): Promise<unknown> =>
+    post('/api/auth/password', { current_password: current, new_password: next }),
   // 退出登录：后端清 Cookie 后返回 204，没有 JSON，所以直接用 fetch 判断状态码。
   logout: async (): Promise<void> => {
     const r = await fetch('/api/auth/logout', { method: 'POST' });

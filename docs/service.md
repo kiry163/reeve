@@ -28,6 +28,8 @@ macOS 用 launchd，Linux 用 systemd `--user`。只有这两个平台有实现�
 reeve service install                    # 用当前进程的可执行文件
 reeve service install --exec /usr/local/bin/reeve
 reeve service install --dry-run          # 只打印将要写入的文件路径与内容，不落地
+reeve service env refresh                # 从当前 shell 重新导入 PATH/TZ/代理/TLS 到实例 env
+reeve service env refresh --dry-run      # 只打印将导入的变量，不写文件
 ```
 
 `--dry-run` 把路径写到 stderr、服务定义写到 stdout；`--exec` 和 `--dry-run` 只对 `install`
@@ -93,6 +95,22 @@ reeve.service`。如果本次 unit 内容有变化、且服务当前是 `active`
   `REEVE_ADDR=0.0.0.0:18800 reeve serve`）。
 
 监听非回环地址没有 TLS，只适合可信局域网；跨网络请用 Tailscale 或 SSH 隧道（详见 README）。
+所有访问（包括本机）都需要密码登录；初始密码见首次启动输出。
+
+## 服务环境变量
+
+服务管理器启动进程时只给最小环境（服务定义里固定了 `REEVE_HOME` 与一个精简 `PATH`）。
+为了后台服务重启后任务仍能用到用户 shell 的关键设置，`reeve service install` 会在实例 `env`
+文件（`$REEVE_HOME/env`）不存在时，从**执行 install 的当前 shell** 导入以下允许列表：
+
+`PATH`、`TZ`、`LANG`、`LC_ALL`、`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`、`ALL_PROXY`、
+`SSL_CERT_FILE`、`SSL_CERT_DIR`。
+
+- 已有 `env` 文件不会被 install 覆盖；要重新导入，运行 `reeve service env refresh`。
+- `--dry-run` 只打印将导入的 `KEY=VALUE`，不修改文件。
+- 只覆盖上述键，其他手动添加的变量保留；密钥与任意变量不会自动导入。
+- 这些变量会合并进每个任务/命令的执行环境；刷新后下一个任务即生效，不需要重启服务。
+- 服务进程自身的环境不会改变（例如模型请求用的代理仍由服务管理器环境决定）。
 
 ## 开机自启、KeepAlive 与重启语义
 
@@ -163,16 +181,18 @@ journalctl --user -u reeve.service
 两者先跑哪个结果都一样；日志子目录 `logs/` 保持 0755。
 里面大致有（不同配置下未必全部存在）：
 
-- 凭据与密钥：`token`（访问 token，0600）、`master.key`（主密钥，0600，首次 `serve` 时自动
-  生成）、`secrets.json`（用主密钥加密的密钥）。
+- 凭据与密钥：`password`（登录密码的 PBKDF2 加盐哈希，0600）、`session.key`（会话签名密钥，0600；
+  `reeve passwd` 或网页改密后轮换，所有旧会话立即失效）、`master.key`（主密钥，0600，首次 `serve`
+  时自动生成）、`secrets.json`（用主密钥加密的密钥）。
 - 配置与状态：`bots.json`、`env`（实例级环境变量）、`executors.json`、`channels.json`、
-  `agent-connection.json`、`schedules.json`、`stream.jsonl`（对话/事件历史）、`memory.md`、
-  `shared-memory.md`。
+  `agent-connection.json`、`stream.jsonl`（对话/事件历史）、`memory.md`、`shared-memory.md`。
 - 目录：`skills/`（自定义技能）、`tools/`（执行器工具）、`checkpoints/`（任务检查点）、
   `logs/`（`reeve.log`）、`workspace/`（主 Bot 工作区）、`workspace-bots/`（各 Bot 工作区）、
-  `bots/<id>/`（子 Bot 数据目录，含各自的 `env.json`）。
+  `bots/<id>/`（子 Bot 数据目录）。
 
-`install` 只负责建目录和加载服务，不会生成 token——token 由第一次 `serve` 启动时创建。
+`install` 只负责建目录、初始化实例 `env` 并加载服务，不会生成密码——第一次 `serve` 启动时会生成
+随机初始密码并只打印一次（服务模式下在 `logs/reeve.log` 里）。也可以先运行 `reeve passwd` 设好密码
+再安装服务。
 
 ## 卸载干净
 
@@ -187,9 +207,9 @@ rm -rf "${REEVE_HOME:-$HOME/.reeve}"
 用 `${REEVE_HOME:-$HOME/.reeve}` 而不是裸 `$REEVE_HOME`，避免变量未设置时删错路径。
 
 注意：这会**永久删除** `master.key` 与 `secrets.json`（主密钥没了，已保存的密钥无法再解密）、
-访问 token、全部对话/事件历史（`stream.jsonl`）、`checkpoints/`，以及两个工作区里的文件；
-不可恢复。删之前先备份需要的部分。如果主密钥是通过 `REEVE_MASTER_KEY` 环境变量提供的，它不在
-这个目录里，但 `secrets.json` 仍是加密数据，删掉同样丢失。
+`password`（登录密码哈希）与 `session.key`、全部对话/事件历史（`stream.jsonl`）、`checkpoints/`，
+以及两个工作区里的文件；不可恢复。删之前先备份需要的部分。如果主密钥是通过 `REEVE_MASTER_KEY`
+环境变量提供的，它不在这个目录里，但 `secrets.json` 仍是加密数据，删掉同样丢失。
 
 ## 已知边界
 

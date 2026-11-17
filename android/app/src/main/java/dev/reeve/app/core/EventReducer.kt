@@ -32,7 +32,6 @@ object EventReducer {
             streaming = "",
             thinking = "",
             toolLabel = "",
-            scheduleRevision = s.scheduleRevision + 1,
         )
         "message" -> onMessage(s, ev)
         "message.hidden" -> hideMessages(s, ev.array().strings())
@@ -85,7 +84,6 @@ object EventReducer {
                 if (busy) s.copy(busy = true) else s.copy(busy = false, streaming = "", thinking = "", toolLabel = "")
             }
         }
-        "schedule.upserted", "schedule.deleted", "schedule.run" -> s.copy(scheduleRevision = s.scheduleRevision + 1)
         // 不改变界面状态的事件：env.set/env.unset、executors.*、task.note/notes.used/reported、
         // message.handled、approval.record（后几类本来就不推给客户端）。
         else -> s

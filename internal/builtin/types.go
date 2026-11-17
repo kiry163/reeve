@@ -61,7 +61,7 @@ type Task struct {
 	History      []Message     `json:"history,omitempty"` // 可选：之前的上下文
 	Workspace    string        `json:"workspace"`
 	Policy       Policy        `json:"policy,omitempty"`
-	EnvList      []string      `json:"-"`                      // 合并后的完整环境（含实例级/bot 级），仅本次执行使用，不落库
+	EnvList      []string      `json:"-"`                      // 合并后的完整环境（进程 + 实例级 + 调用级），仅本次执行使用，不落库
 	EnvStore     EnvStore      `json:"-"`                      // list_env/set_env/unset_env 的读写接口，由 bot 层注入
 	Skills       *skills.Set   `json:"-"`                      // 内置执行器可见的技能集合（索引进系统提示，正文按需 read_skill）
 	MaxSteps     int           `json:"max_steps,omitempty"`    // 默认 50

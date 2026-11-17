@@ -158,8 +158,7 @@ var pastedKey = regexp.MustCompile(`\b(sk-ant-[A-Za-z0-9_\-]{20,}|sk-[A-Za-z0-9_
 var pastedPair = regexp.MustCompile(`reeve://pair\?\S+`)
 
 // maskPastedKeys 返回隐藏后的文本和是否发现了疑似密钥。
-// 只有和当前访问 token 完全一致的 43 字符 base64url 才算（避免把普通短串误判成密钥）；
-// 配对串无论 token 是否还当前有效都整串隐藏。
+// 配对串整串隐藏；常见 API Key 格式自动隐藏并提醒聊天层改用密钥卡片。
 func (b *Bot) maskPastedKeys(text string) (string, bool) {
 	leaked := false
 	if pastedPair.MatchString(text) {
@@ -167,9 +166,6 @@ func (b *Bot) maskPastedKeys(text string) (string, bool) {
 	}
 	if pastedKey.MatchString(text) {
 		text, leaked = pastedKey.ReplaceAllString(text, "[疑似密钥已隐藏]"), true
-	}
-	if tok := b.redactor.token(); tok != "" && strings.Contains(text, tok) {
-		text, leaked = strings.ReplaceAll(text, tok, tokenMask), true
 	}
 	return text, leaked
 }

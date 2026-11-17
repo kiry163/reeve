@@ -12,10 +12,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Chat
-import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Chat
-import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -38,10 +36,9 @@ import dev.reeve.app.core.BotRef
 import dev.reeve.app.core.PairDraft
 import dev.reeve.app.core.ServerStatus
 
-/** 页面：底部三个标签（聊天 / 调度器 / 设置），其余页面压栈打开 */
+/** 页面：底部两个标签（聊天 / 设置），其余页面压栈打开 */
 sealed interface Screen {
     data object Home : Screen
-    data object Scheduler : Screen
     data object Settings : Screen
     data class Chat(val ref: BotRef) : Screen
     data class Server(val id: String) : Screen
@@ -52,7 +49,7 @@ sealed interface Screen {
         val fromExternalLink: Boolean = false,
     ) : Screen
     data class Channels(val ref: BotRef) : Screen
-    data class Env(val ref: BotRef? = null) : Screen
+    data class Env(val server: String) : Screen
     data class Executors(val ref: BotRef? = null) : Screen
     data class Skills(val ref: BotRef? = null) : Screen
     data class BotEditor(val server: String, val ref: BotRef? = null) : Screen
@@ -73,13 +70,13 @@ class Nav {
 internal fun shouldOpenPair(top: Screen): Boolean = top !is Screen.AddServer
 
 /**
- * 正在看的 Bot：聊天、渠道、环境变量、执行器、技能、Bot 编辑页都算（新建 Bot 时 ref 为空，不算）。
+ * 正在看的 Bot：聊天、渠道、执行器、技能、Bot 编辑页都算（新建 Bot 时 ref 为空，不算）。
  * 这些页面上收到的审批/任务/回复都不该再弹通知——用户已经在为这个 Bot 干活了。
+ * 环境变量是实例级的，不算看某个 Bot。
  */
 internal fun botOf(top: Screen): BotRef? = when (top) {
     is Screen.Chat -> top.ref
     is Screen.Channels -> top.ref
-    is Screen.Env -> top.ref
     is Screen.Executors -> top.ref
     is Screen.Skills -> top.ref
     is Screen.BotEditor -> top.ref
@@ -94,7 +91,7 @@ internal fun missingChatText(status: ServerStatus?, botKnown: Boolean): String =
     null -> "这台服务器已移除"
     ServerStatus.Connecting -> "正在连接…"
     ServerStatus.Online -> if (botKnown) "正在连接…" else "这个 Bot 现在连不上"
-    ServerStatus.NeedsPairing -> "token 已失效，需要重新配对"
+    ServerStatus.NeedsLogin -> "登录已过期，请重新登录"
     is ServerStatus.Offline -> "这个 Bot 现在连不上：${status.error}"
 }
 
@@ -125,7 +122,7 @@ fun ReeveRoot(state: AppState, openRef: MutableState<BotRef?>) {
         return
     }
 
-    val tabbed = top == Screen.Home || top == Screen.Scheduler || top == Screen.Settings
+    val tabbed = top == Screen.Home || top == Screen.Settings
     Scaffold(
         bottomBar = { if (tabbed) BottomBar(state, nav) },
         containerColor = MaterialTheme.colorScheme.surface,
@@ -142,7 +139,6 @@ fun ReeveRoot(state: AppState, openRef: MutableState<BotRef?>) {
 private fun ScreenContent(s: Screen, state: AppState, nav: Nav) {
     when (s) {
         Screen.Home -> HomeScreen(state, nav)
-        Screen.Scheduler -> SchedulerScreen(state, nav)
         Screen.Settings -> SettingsScreen(state, nav)
         is Screen.Chat -> {
             val session = state.session(s.ref)
@@ -153,7 +149,7 @@ private fun ScreenContent(s: Screen, state: AppState, nav: Nav) {
         is Screen.AddServer -> PairScreen(state, nav, s.existing?.let { state.server(it) }, s.draft, s.fromExternalLink)
         is Screen.Channels -> state.session(s.ref)?.let { ChannelsScreen(it, nav) }
             ?: MissingScreen(missingChatText(state.server(s.ref.server)?.status, state.knownBot(s.ref)), nav)
-        is Screen.Env -> EnvScreen(state, s.ref, nav)
+        is Screen.Env -> EnvScreen(state, s.server, nav)
         is Screen.Executors -> ExecutorsScreen(state, s.ref, nav)
         is Screen.Skills -> SkillsScreen(state, s.ref, nav)
         is Screen.BotEditor -> state.server(s.server)?.let { BotEditorScreen(state, it, s.ref, nav) } ?: MissingScreen("服务器已移除", nav)
@@ -175,11 +171,6 @@ private fun BottomBar(state: AppState, nav: Nav) {
                 }
             },
             label = { Text("聊天") },
-        )
-        NavigationBarItem(
-            selected = top == Screen.Scheduler, onClick = { nav.tab(Screen.Scheduler) },
-            icon = { Icon(if (top == Screen.Scheduler) Icons.Filled.Schedule else Icons.Outlined.Schedule, null) },
-            label = { Text("调度器") },
         )
         NavigationBarItem(
             selected = top == Screen.Settings, onClick = { nav.tab(Screen.Settings) },

@@ -2,9 +2,8 @@
 //
 //	reeve                 启动服务（等同 reeve serve）
 //	reeve serve           启动 HTTP + SSE + 网页，默认只监听 127.0.0.1:18800
-//	reeve pair            打印手机连接用的地址与 token
-//	reeve token show      打印 token
-//	reeve token rotate    轮换 token（所有已登录设备立即失效）
+//	reeve pair            打印手机连接用的配对地址
+//	reeve passwd          重设登录密码（所有已登录设备立即失效）
 //	reeve service ...     安装/卸载/查询用户服务（launchd 或 systemd --user）
 //	reeve version         版本信息
 package main
@@ -14,8 +13,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -24,6 +23,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/kiry163/reeve/internal/auth"
 	"github.com/kiry163/reeve/internal/bot"
@@ -48,14 +49,14 @@ func main() {
 		serve(args)
 	case "pair":
 		pair(args)
-	case "token":
-		tokenCmd(args)
+	case "passwd":
+		passwdCmd(args)
 	case "service":
 		os.Exit(serviceCmd(args))
 	case "version":
 		fmt.Println("reeve", version)
 	default:
-		fmt.Fprintf(os.Stderr, "未知命令 %q；可用：serve / pair / token show / token rotate / service install|uninstall|status / version\n", cmd)
+		fmt.Fprintf(os.Stderr, "未知命令 %q；可用：serve / pair / passwd / service install|uninstall|status / version\n", cmd)
 		os.Exit(2)
 	}
 }
@@ -87,10 +88,12 @@ func serve(args []string) {
 	if err := service.EnsureDataDir(data); err != nil {
 		fatal("准备数据目录 %s 失败：%v", data, err)
 	}
-	if _, created, err := auth.EnsureToken(data); err != nil {
-		fatal("准备访问 token 失败：%v", err)
-	} else if created {
-		log.Printf("已生成访问 token（%s/token，0600）", data)
+	initial, created, err := auth.EnsurePassword(data)
+	if err != nil {
+		fatal("准备登录密码失败：%v", err)
+	}
+	if created {
+		fmt.Printf("\n  已生成初始登录密码：%s\n  请用这个密码登录；之后可在网页「设置 › 账号与登录」修改，或运行 reeve passwd 重设。\n\n", initial)
 	}
 
 	bots, err := bot.OpenBots(bot.Config{
@@ -113,9 +116,9 @@ func serve(args []string) {
 		ui = os.DirFS("web/dist")
 	}
 
-	// TokenDir 让运行中的服务每次鉴权都重新读 token 文件，
-	// 这样 reeve token rotate 能立即让旧 token 和旧会话失效，无需重启。
-	guard := &auth.Guard{TokenDir: data, LoopbackFree: true, SessionTTL: 7 * 24 * time.Hour}
+	// 所有请求（包括本机回环）都必须先登录；会话密钥每次鉴权都重新读取，
+	// 所以 reeve passwd 或网页改密后，旧会话立即失效，不需要重启服务。
+	guard := &auth.Guard{DataDir: data, SessionTTL: 30 * 24 * time.Hour}
 	handler := guard.Middleware(bots.Handler(ui))
 
 	ln, err := net.Listen("tcp", *addr)
@@ -150,7 +153,7 @@ func serve(args []string) {
 	}
 }
 
-// printStartup 打印启动信息，返回浏览器应打开的页面地址（不含 token）。
+// printStartup 打印启动信息，返回浏览器应打开的页面地址。
 // addr 是实际监听地址（ln.Addr().String()），因此 localhost 之类的名字已经解析成数字 IP。
 func printStartup(addr, data, workspace string) string {
 	host, port, err := net.SplitHostPort(addr)
@@ -165,9 +168,10 @@ func printStartup(addr, data, workspace string) string {
 	fmt.Printf("\n  reeve %s 已启动\n\n", version)
 	fmt.Printf("  网页：    http://%s/\n", net.JoinHostPort(shown, port))
 	fmt.Printf("  数据：    %s\n  工作区：  %s\n", data, workspace)
+	fmt.Printf("  登录：    所有访问都需要密码；首次启动的初始密码只打印一次。\n")
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 		fmt.Printf("\n  正在监听非回环地址：没有 TLS，仅限可信局域网；跨网络请用 Tailscale 或 SSH 隧道。\n")
-		fmt.Printf("  手机连接需要 token：运行 reeve pair 获取完整地址。\n")
+		fmt.Printf("  手机连接：运行 reeve pair 获取配对地址，然后输入密码登录。\n")
 	}
 	fmt.Printf("\n  按 Ctrl+C 退出。\n")
 	return page
@@ -178,38 +182,62 @@ func pair(args []string) {
 	addr := fl.String("addr", envOr("REEVE_ADDR", "127.0.0.1:18800"), "手机能访问到的具体地址，例如 192.168.1.20:18800 或 Tailscale 地址")
 	_ = fl.Parse(args)
 	data := home()
-	token, _, err := auth.EnsureToken(data)
+	initial, created, err := auth.EnsurePassword(data)
 	if err != nil {
-		fatal("准备访问 token 失败：%v", err)
+		fatal("准备登录密码失败：%v", err)
+	}
+	if created {
+		fmt.Printf("初始登录密码：%s\n（只显示这一次；登录后可在网页设置里修改，或运行 reeve passwd 重设）\n\n", initial)
 	}
 	fmt.Printf("控制台： %s/\n", "http://"+*addr)
-	fmt.Printf("配对串： reeve://pair?v=1&host=%s&token=%s\n", *addr, token)
+	fmt.Printf("配对串： reeve://pair?v=1&host=%s\n", *addr)
+	fmt.Println("手机打开配对串后输入服务器密码登录。")
 }
 
-func tokenCmd(args []string) {
-	sub := "show"
-	if len(args) > 0 {
-		sub = args[0]
+// passwdCmd 重设登录密码。能在服务器上读写数据目录就视为有权限，不要求旧密码。
+func passwdCmd(args []string) {
+	_ = args
+	password, again, err := readNewPassword()
+	if err != nil {
+		fatal("读取密码失败：%v", err)
 	}
-	switch sub {
-	case "show":
-		token, _, err := auth.EnsureToken(home())
-		if err != nil {
-			fatal("准备访问 token 失败：%v", err)
-		}
-		fmt.Println(token)
-		fmt.Printf("配对串： reeve://pair?v=1&host=%s&token=%s\n", envOr("REEVE_ADDR", "127.0.0.1:18800"), token)
-	case "rotate":
-		next, err := auth.RotateToken(home())
-		if err != nil {
-			fatal("轮换 token 失败：%v", err)
-		}
-		fmt.Println("已轮换 token，所有已登录设备需重新配对。")
-		fmt.Printf("新配对串： reeve://pair?v=1&host=%s&token=%s\n", envOr("REEVE_ADDR", "127.0.0.1:18800"), next)
-	default:
-		fmt.Fprintln(os.Stderr, "用法：reeve token show | reeve token rotate")
-		os.Exit(2)
+	if password != again {
+		fatal("两次输入的密码不一致")
 	}
+	if err := auth.SetPassword(home(), password); err != nil {
+		fatal("设置密码失败：%v", err)
+	}
+	fmt.Println("密码已更新；所有已登录设备需要重新登录。")
+}
+
+// readNewPassword 优先隐藏终端输入；从管道读取时按行取两次（便于脚本使用）。
+func readNewPassword() (string, string, error) {
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		fmt.Print("新密码：")
+		first, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			return "", "", err
+		}
+		fmt.Print("再次输入：")
+		second, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			return "", "", err
+		}
+		return string(first), string(second), nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(os.Stdin, 4096))
+	if err != nil {
+		return "", "", err
+	}
+	lines := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
+	first := strings.TrimSpace(lines[0])
+	second := first
+	if len(lines) > 1 && strings.TrimSpace(lines[1]) != "" {
+		second = strings.TrimSpace(lines[1])
+	}
+	return first, second, nil
 }
 
 func envOr(key, def string) string {

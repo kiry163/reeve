@@ -15,8 +15,7 @@ type recordingBot struct {
 	tasks      string
 	context    string
 	skills     []string
-	instance   map[string]string
-	botEnv     map[string]string
+	env        map[string]string
 	envSets    []string
 	envUnsets  []string
 	model      string
@@ -34,15 +33,15 @@ func (r *recordingBot) ClearContext() error {
 func (r *recordingBot) ListTasks() string    { return r.tasks }
 func (r *recordingBot) ContextInfo() string  { return r.context }
 func (r *recordingBot) ListSkills() []string { return r.skills }
-func (r *recordingBot) ListEnv() (map[string]string, map[string]string, error) {
-	return r.instance, r.botEnv, r.listEnvErr
+func (r *recordingBot) ListEnv() (map[string]string, error) {
+	return r.env, r.listEnvErr
 }
-func (r *recordingBot) SetEnv(name, value string, global bool) error {
-	r.envSets = append(r.envSets, fmt.Sprintf("%s=%s|%v", name, value, global))
+func (r *recordingBot) SetEnv(name, value string) error {
+	r.envSets = append(r.envSets, name+"="+value)
 	return nil
 }
-func (r *recordingBot) UnsetEnv(name string, global bool) error {
-	r.envUnsets = append(r.envUnsets, fmt.Sprintf("%s|%v", name, global))
+func (r *recordingBot) UnsetEnv(name string) error {
+	r.envUnsets = append(r.envUnsets, name)
 	return nil
 }
 func (r *recordingBot) SwitchModel(name string) (string, error) {
@@ -210,13 +209,13 @@ func TestEnvSetAcceptsEqualsAndSpace(t *testing.T) {
 	if res := run(t, fb, "/env set A=1"); !res.OK {
 		t.Fatalf("K=V 写法应成功：%+v", res)
 	}
-	if res := run(t, fb, "/env set B 2 --global"); !res.OK {
-		t.Fatalf("K V --global 写法应成功：%+v", res)
+	if res := run(t, fb, "/env set B 2"); !res.OK {
+		t.Fatalf("K V 写法应成功：%+v", res)
 	}
 	if res := run(t, fb, "/env set C some value"); !res.OK {
 		t.Fatalf("值里有空格时应整体作为值：%+v", res)
 	}
-	want := []string{"A=1|false", "B=2|true", "C=some value|false"}
+	want := []string{"A=1", "B=2", "C=some value"}
 	if len(fb.envSets) != len(want) {
 		t.Fatalf("SetEnv 调用 = %v，期望 %v", fb.envSets, want)
 	}
@@ -227,18 +226,15 @@ func TestEnvSetAcceptsEqualsAndSpace(t *testing.T) {
 	}
 }
 
-func TestEnvUnsetAndLayerFlag(t *testing.T) {
-	fb := &recordingBot{
-		instance: map[string]string{"B": "2"},
-		botEnv:   map[string]string{"A": "1"},
-	}
+func TestEnvUnset(t *testing.T) {
+	fb := &recordingBot{env: map[string]string{"A": "1", "B": "2"}}
 	if res := run(t, fb, "/env unset A"); !res.OK {
 		t.Fatalf("unset 应成功：%+v", res)
 	}
-	if res := run(t, fb, "/env unset B --global"); !res.OK {
-		t.Fatalf("unset --global 应成功：%+v", res)
+	if res := run(t, fb, "/env unset B"); !res.OK {
+		t.Fatalf("unset 应成功：%+v", res)
 	}
-	if len(fb.envUnsets) != 2 || fb.envUnsets[0] != "A|false" || fb.envUnsets[1] != "B|true" {
+	if len(fb.envUnsets) != 2 || fb.envUnsets[0] != "A" || fb.envUnsets[1] != "B" {
 		t.Fatalf("UnsetEnv 调用 = %v", fb.envUnsets)
 	}
 }
@@ -247,34 +243,15 @@ func TestEnvUnsetMissingKeyFails(t *testing.T) {
 	if res := run(t, &recordingBot{}, "/env unset A"); res.OK || !strings.Contains(res.Text, "没有 A") {
 		t.Fatalf("不存在的键应失败：%+v", res)
 	}
-	fb := &recordingBot{instance: map[string]string{"A": "1"}}
-	res := run(t, fb, "/env unset A")
-	if res.OK || !strings.Contains(res.Text, "--global") {
-		t.Fatalf("键在实例级时应提示 --global：%+v", res)
-	}
-	fb = &recordingBot{botEnv: map[string]string{"A": "1"}}
-	res = run(t, fb, "/env unset A --global")
-	if res.OK || !strings.Contains(res.Text, "去掉 --global") {
-		t.Fatalf("键在 bot 级时应提示去掉 --global：%+v", res)
-	}
-	if len(fb.envUnsets) != 0 {
-		t.Fatalf("不存在的键不应调用 UnsetEnv：%v", fb.envUnsets)
-	}
 }
 
-func TestEnvListGlobalOnly(t *testing.T) {
-	fb := &recordingBot{
-		instance: map[string]string{"ALPHA": "1"},
-		botEnv:   map[string]string{"BETA": "2"},
-	}
-	res := run(t, fb, "/env list --global")
+func TestEnvListHidesValues(t *testing.T) {
+	fb := &recordingBot{env: map[string]string{"ALPHA": "1"}}
+	res := run(t, fb, "/env list")
 	if !res.OK {
-		t.Fatalf("/env list --global 应成功：%+v", res)
+		t.Fatalf("/env list 应成功：%+v", res)
 	}
-	if !strings.Contains(res.Text, "ALPHA") || strings.Contains(res.Text, "BETA") {
-		t.Fatalf("--global 应只列实例级：%q", res.Text)
-	}
-	if strings.Contains(res.Text, "=1") || !strings.Contains(res.Text, "<已隐藏>") {
+	if !strings.Contains(res.Text, "ALPHA") || strings.Contains(res.Text, "=1") || !strings.Contains(res.Text, "<已隐藏>") {
 		t.Fatalf("命令结果不能带值，应显示占位符：%q", res.Text)
 	}
 }
@@ -288,30 +265,24 @@ func TestEnvUsageErrors(t *testing.T) {
 	}
 }
 
-func TestEnvListShowsBothLayersSorted(t *testing.T) {
-	fb := &recordingBot{
-		instance: map[string]string{"ZED": "9", "ALPHA": "1"},
-		botEnv:   map[string]string{"BETA": "2"},
-	}
+func TestEnvListSorted(t *testing.T) {
+	fb := &recordingBot{env: map[string]string{"ZED": "9", "ALPHA": "1"}}
 	res := run(t, fb, "/env list")
 	if !res.OK {
 		t.Fatalf("/env list 应成功：%+v", res)
 	}
-	for _, want := range []string{"实例级", "bot 级", "ALPHA", "ZED", "BETA", "<已隐藏>", "值请在设置的「环境变量」里查看"} {
+	for _, want := range []string{"实例级", "ALPHA", "ZED", "<已隐藏>", "值请在设置的「环境变量」里查看"} {
 		if !strings.Contains(res.Text, want) {
 			t.Errorf("/env list 缺少 %q：%q", want, res.Text)
 		}
 	}
-	for _, secret := range []string{"=1", "=9", "=2"} {
+	for _, secret := range []string{"=1", "=9"} {
 		if strings.Contains(res.Text, secret) {
 			t.Errorf("/env list 不应输出变量的值（发现 %q）：%q", secret, res.Text)
 		}
 	}
 	if strings.Index(res.Text, "ALPHA") > strings.Index(res.Text, "ZED") {
-		t.Errorf("实例级变量未按名字排序：%q", res.Text)
-	}
-	if strings.Index(res.Text, "实例级") > strings.Index(res.Text, "bot 级") {
-		t.Errorf("实例级应排在 bot 级之前：%q", res.Text)
+		t.Errorf("变量未按名字排序：%q", res.Text)
 	}
 }
 

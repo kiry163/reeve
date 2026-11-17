@@ -18,6 +18,6 @@ class PairNavigationTest {
     fun doesNotPushPairScreenTwice() {
         assertFalse(shouldOpenPair(Screen.AddServer()))
         assertFalse(shouldOpenPair(Screen.AddServer(existing = "srv-1")))
-        assertFalse(shouldOpenPair(Screen.AddServer(draft = PairDraft("host:18800", "tok"))))
+        assertFalse(shouldOpenPair(Screen.AddServer(draft = PairDraft("host:18800", "pw"))))
     }
 }

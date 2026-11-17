@@ -2,7 +2,6 @@ package bot
 
 import (
 	"context"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -10,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kiry163/reeve/internal/auth"
 	"github.com/kiry163/reeve/internal/builtin"
 )
 
@@ -132,45 +130,6 @@ func TestRootLegacyAPIRemoved(t *testing.T) {
 		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != want {
 			t.Errorf("GET %s = %d, want %d", path, w.Code, want)
-		}
-	}
-}
-
-// 认证中间件必须同时挡住：DNS 重绑定（Host 不是本机）、跨站写请求、无凭证的远程访问；
-// 同时回环地址放行，带正确 Bearer 的远程客户端放行。
-func TestGuardSecurityMatrix(t *testing.T) {
-	g := &auth.Guard{Token: "secret", LoopbackFree: true, SessionTTL: time.Hour}
-	h := g.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
-	cases := []struct {
-		name, method, host, remote, origin string
-		bearer                             bool
-		want                               int
-	}{
-		{"回环放行", "GET", "127.0.0.1:18800", "127.0.0.1:5555", "", false, 204},
-		{"localhost 放行", "GET", "localhost:18800", "[::1]:5555", "", false, 204},
-		{"DNS 重绑定", "GET", "evil.example:18800", "127.0.0.1:5555", "", false, 401},
-		{"跨站写", "POST", "127.0.0.1:18800", "127.0.0.1:5555", "https://evil.example", false, 403},
-		{"同源写", "POST", "127.0.0.1:18800", "127.0.0.1:5555", "http://127.0.0.1:18800", false, 204},
-		{"远程带 Bearer", "GET", "reeve.example:18800", "203.0.113.9:5555", "", true, 204},
-		{"远程无凭证", "GET", "reeve.example:18800", "203.0.113.9:5555", "", false, 401},
-	}
-	for _, c := range cases {
-		r := httptest.NewRequest(c.method, "http://"+c.host+"/api/approvals/x", nil)
-		r.Host, r.RemoteAddr = c.host, c.remote
-		if c.origin != "" {
-			r.Header.Set("Origin", c.origin)
-		}
-		if c.bearer {
-			r.Header.Set("Authorization", "Bearer secret")
-		}
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
-		if w.Code != c.want {
-			t.Errorf("%s：%s host=%s remote=%s origin=%s 得到 %d，应为 %d",
-				c.name, c.method, c.host, c.remote, c.origin, w.Code, c.want)
-		}
-		if got := w.Header().Get("X-Frame-Options"); got != "DENY" {
-			t.Errorf("%s：X-Frame-Options = %q", c.name, got)
 		}
 	}
 }

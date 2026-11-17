@@ -24,9 +24,9 @@ type BotAPI interface {
 	ListTasks() string
 	ContextInfo() string
 	ListSkills() []string
-	ListEnv() (instance, bot map[string]string, err error)
-	SetEnv(name, value string, global bool) error
-	UnsetEnv(name string, global bool) error
+	ListEnv() (map[string]string, error)
+	SetEnv(name, value string) error
+	UnsetEnv(name string) error
 	SwitchModel(name string) (string, error)
 	DefaultExecutor() string
 	AllowedExecutors() []string

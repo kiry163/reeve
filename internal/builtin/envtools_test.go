@@ -12,28 +12,27 @@ type fakeSetCall struct{ name, value, source string }
 type fakeUnsetCall struct{ name, source string }
 
 type fakeEnvStore struct {
-	instance map[string]string
-	bot      map[string]string
+	env      map[string]string
 	viewErr  error
 	setCalls []fakeSetCall
 	unset    []fakeUnsetCall
 	views    int
 }
 
-func (f *fakeEnvStore) View() (map[string]string, map[string]string, error) {
+func (f *fakeEnvStore) ListEnv() (map[string]string, error) {
 	f.views++
 	if f.viewErr != nil {
-		return nil, nil, f.viewErr
+		return nil, f.viewErr
 	}
-	return f.instance, f.bot, nil
+	return f.env, nil
 }
 
-func (f *fakeEnvStore) SetBotEnv(name, value, source string) error {
+func (f *fakeEnvStore) SetInstanceEnv(name, value, source string) error {
 	f.setCalls = append(f.setCalls, fakeSetCall{name, value, source})
 	return nil
 }
 
-func (f *fakeEnvStore) UnsetBotEnv(name, source string) error {
+func (f *fakeEnvStore) UnsetInstanceEnv(name, source string) error {
 	f.unset = append(f.unset, fakeUnsetCall{name, source})
 	return nil
 }
@@ -76,7 +75,7 @@ func TestEnvToolsRejectInvalidArgsWithoutTouchingStore(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			st := &fakeEnvStore{bot: map[string]string{}}
+			st := &fakeEnvStore{env: map[string]string{}}
 			_, err := c.tool.Execute(context.Background(), ToolEnv{EnvStore: st}, json.RawMessage(c.args))
 			if err == nil {
 				t.Fatal("非法参数应报错")
@@ -106,7 +105,7 @@ func TestEnvToolsWithoutStore(t *testing.T) {
 }
 
 func TestSetEnvPersistsAsBuiltin(t *testing.T) {
-	st := &fakeEnvStore{bot: map[string]string{}}
+	st := &fakeEnvStore{env: map[string]string{}}
 	out, err := setEnvTool.Execute(context.Background(), ToolEnv{EnvStore: st}, json.RawMessage(`{"name":"HTTPS_PROXY","value":"http://proxy:8080"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -131,7 +130,7 @@ func TestSetEnvRejectsSecretRefs(t *testing.T) {
 		"postgres://user:{{secret:PG_PASS}}@db:5432/app",
 		"{{secret:BAD}}",
 	} {
-		st := &fakeEnvStore{bot: map[string]string{}}
+		st := &fakeEnvStore{env: map[string]string{}}
 		_, err := setEnvTool.Execute(context.Background(), ToolEnv{EnvStore: st},
 			json.RawMessage(`{"name":"DATABASE_URL","value":`+mustJSON(t, v)+`}`))
 		if err == nil {
@@ -148,7 +147,7 @@ func TestSetEnvRejectsSecretRefs(t *testing.T) {
 
 func TestSetEnvHighEntropyLiteralOnlyWarns(t *testing.T) {
 	const literal = "9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c"
-	st := &fakeEnvStore{bot: map[string]string{}}
+	st := &fakeEnvStore{env: map[string]string{}}
 	out, err := setEnvTool.Execute(context.Background(), ToolEnv{EnvStore: st},
 		json.RawMessage(`{"name":"LITERAL","value":"`+literal+`"}`))
 	if err != nil {
@@ -163,7 +162,7 @@ func TestSetEnvHighEntropyLiteralOnlyWarns(t *testing.T) {
 }
 
 func TestSetEnvEmptyValueClears(t *testing.T) {
-	st := &fakeEnvStore{bot: map[string]string{"A": "1"}}
+	st := &fakeEnvStore{env: map[string]string{"A": "1"}}
 	out, err := setEnvTool.Execute(context.Background(), ToolEnv{EnvStore: st}, json.RawMessage(`{"name":"A","value":""}`))
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +176,7 @@ func TestSetEnvEmptyValueClears(t *testing.T) {
 }
 
 func TestSetEnvMissingValueRejected(t *testing.T) {
-	st := &fakeEnvStore{bot: map[string]string{}}
+	st := &fakeEnvStore{env: map[string]string{}}
 	for _, args := range []string{`{"name":"A"}`, `{"name":"A","value":null}`} {
 		_, err := setEnvTool.Execute(context.Background(), ToolEnv{EnvStore: st}, json.RawMessage(args))
 		if err == nil || !strings.Contains(err.Error(), "需要 value") || !strings.Contains(err.Error(), "unset_env") {
@@ -189,51 +188,33 @@ func TestSetEnvMissingValueRejected(t *testing.T) {
 	}
 }
 
-func TestUnsetEnvViewErrorStillRemovesBotVariable(t *testing.T) {
+func TestUnsetEnvListErrorBlocksDelete(t *testing.T) {
 	st := &fakeEnvStore{viewErr: errors.New("实例级 env 第 3 行不合法")}
-	out, err := unsetEnvTool.Execute(context.Background(), ToolEnv{EnvStore: st}, json.RawMessage(`{"name":"A"}`))
-	if err != nil {
-		t.Fatalf("View 失败不应阻断 bot 级删除：%v", err)
+	_, err := unsetEnvTool.Execute(context.Background(), ToolEnv{EnvStore: st}, json.RawMessage(`{"name":"A"}`))
+	if err == nil || !strings.Contains(err.Error(), "实例级 env") {
+		t.Fatalf("读取失败时应报错，得到 %v", err)
 	}
-	if !strings.Contains(out, "已删除 A") {
-		t.Fatalf("成功提示不对：%q", out)
-	}
-	if len(st.unset) != 1 || st.unset[0].name != "A" || st.unset[0].source != "builtin" {
-		t.Fatalf("删除调用不对：%v", st.unset)
+	if len(st.unset) != 0 {
+		t.Fatalf("读取失败时不应盲目删除：%v", st.unset)
 	}
 }
 
 func TestUnsetEnvMissingDoesNotWrite(t *testing.T) {
-	t.Run("完全不存在", func(t *testing.T) {
-		st := &fakeEnvStore{instance: map[string]string{}, bot: map[string]string{}}
-		out, err := unsetEnvTool.Execute(context.Background(), ToolEnv{EnvStore: st}, json.RawMessage(`{"name":"NOPE"}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(out, "本来就没有 NOPE") {
-			t.Fatalf("提示不对：%q", out)
-		}
-		if len(st.unset) != 0 {
-			t.Fatalf("不存在时不应写事件：%v", st.unset)
-		}
-	})
-	t.Run("只在实例级", func(t *testing.T) {
-		st := &fakeEnvStore{instance: map[string]string{"SHARED": "1"}, bot: map[string]string{}}
-		out, err := unsetEnvTool.Execute(context.Background(), ToolEnv{EnvStore: st}, json.RawMessage(`{"name":"SHARED"}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(out, "实例级") {
-			t.Fatalf("应说明变量在实例级：%q", out)
-		}
-		if len(st.unset) != 0 {
-			t.Fatalf("不应删除实例级变量：%v", st.unset)
-		}
-	})
+	st := &fakeEnvStore{env: map[string]string{}}
+	out, err := unsetEnvTool.Execute(context.Background(), ToolEnv{EnvStore: st}, json.RawMessage(`{"name":"NOPE"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "本来就没有 NOPE") {
+		t.Fatalf("提示不对：%q", out)
+	}
+	if len(st.unset) != 0 {
+		t.Fatalf("不存在时不应写事件：%v", st.unset)
+	}
 }
 
-func TestUnsetEnvRemovesBotVariable(t *testing.T) {
-	st := &fakeEnvStore{bot: map[string]string{"A": "1"}}
+func TestUnsetEnvRemovesVariable(t *testing.T) {
+	st := &fakeEnvStore{env: map[string]string{"A": "1"}}
 	out, err := unsetEnvTool.Execute(context.Background(), ToolEnv{EnvStore: st}, json.RawMessage(`{"name":"A"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -264,7 +245,7 @@ func TestSetEnvSecretWarning(t *testing.T) {
 		if !LooksLikeSecret(v) {
 			t.Errorf("%q 应被判定为疑似密钥", v)
 		}
-		st := &fakeEnvStore{bot: map[string]string{}}
+		st := &fakeEnvStore{env: map[string]string{}}
 		out, err := setEnvTool.Execute(context.Background(), ToolEnv{EnvStore: st},
 			json.RawMessage(`{"name":"TOKEN","value":`+mustJSON(t, v)+`}`))
 		if err != nil {
@@ -278,7 +259,7 @@ func TestSetEnvSecretWarning(t *testing.T) {
 		if LooksLikeSecret(v) {
 			t.Errorf("%q 不应被判定为疑似密钥", v)
 		}
-		st := &fakeEnvStore{bot: map[string]string{}}
+		st := &fakeEnvStore{env: map[string]string{}}
 		out, err := setEnvTool.Execute(context.Background(), ToolEnv{EnvStore: st},
 			json.RawMessage(`{"name":"NOTE","value":`+mustJSON(t, v)+`}`))
 		if err != nil {
@@ -290,20 +271,20 @@ func TestSetEnvSecretWarning(t *testing.T) {
 	}
 }
 
-func TestListEnvShowsInstanceAndBotOnly(t *testing.T) {
-	st := &fakeEnvStore{
-		instance: map[string]string{"INSTANCE_VAR": "iv"},
-		bot:      map[string]string{"BOT_VAR": "bv"},
-	}
+func TestListEnvShowsInstanceOnly(t *testing.T) {
+	st := &fakeEnvStore{env: map[string]string{"INSTANCE_VAR": "iv"}}
 	out, err := listEnvTool.Execute(context.Background(),
 		ToolEnv{EnvStore: st, Env: map[string]string{"CALL_VAR": "cv"}}, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"实例级", "INSTANCE_VAR=iv", "bot 级", "BOT_VAR=bv", "{{secret:NAME}}"} {
+	for _, want := range []string{"实例级", "INSTANCE_VAR=iv", "{{secret:NAME}}"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("list_env 输出缺少 %q：\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "bot 级") {
+		t.Errorf("list_env 不应再输出 bot 级：\n%s", out)
 	}
 	if strings.Contains(out, "CALL_VAR") {
 		t.Errorf("list_env 不应打印调用级变量：\n%s", out)

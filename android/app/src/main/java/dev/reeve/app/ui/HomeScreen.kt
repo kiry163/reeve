@@ -102,12 +102,12 @@ fun HomeScreen(state: AppState, nav: Nav) {
             for (s in state.servers) {
                 item(key = "h-${s.id}") { ServerHeader(s) }
                 when (val st = s.status) {
-                    ServerStatus.NeedsPairing -> item(key = "l-${s.id}") {
+                    ServerStatus.NeedsLogin -> item(key = "l-${s.id}") {
                         ListRow(
-                            "需要重新配对", "这台服务器的 token 失效了，重新配对后继续",
+                            "需要重新登录", "这台服务器的登录已失效，输入密码后继续",
                             leading = { Icon(Icons.Outlined.LockClock, null, tint = Reeve.extra.warn) },
                             onClick = { nav.push(Screen.AddServer(s.id)) },
-                        ) { TextButton(onClick = { nav.push(Screen.AddServer(s.id)) }) { Text("重新配对") } }
+                        ) { TextButton(onClick = { nav.push(Screen.AddServer(s.id)) }) { Text("重新登录") } }
                     }
                     is ServerStatus.Offline -> if (s.bots.isEmpty()) item(key = "o-${s.id}") {
                         ListRow("连不上", st.error)
@@ -134,7 +134,7 @@ private fun ServerHeader(s: ServerEntry) {
     val note = when (s.status) {
         ServerStatus.Online -> if (s.config.insecure) "HTTP 未加密" else null
         ServerStatus.Connecting -> "正在连接"
-        ServerStatus.NeedsPairing -> "需要重新配对"
+        ServerStatus.NeedsLogin -> "需要重新登录"
         is ServerStatus.Offline -> "离线"
     }
     Row(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {

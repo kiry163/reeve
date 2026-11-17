@@ -97,7 +97,7 @@ func RegisterBuiltins(r *Registry) {
 		Name:    "env",
 		Aliases: []string{"e"},
 		Summary: "查看或修改环境变量",
-		Usage:   "/env [list|set K=V|unset K] [--global]",
+		Usage:   "/env [list|set K=V|unset K]",
 		Run:     runEnv,
 	})
 	r.register(Definition{
@@ -137,20 +137,20 @@ func RegisterBuiltins(r *Registry) {
 	})
 }
 
-const envUsage = "用法：/env [list|set K=V|unset K] [--global]\n例如：/env set API_KEY=xxx（加 --global 写实例级，所有 Bot 共享）"
+const envUsage = "用法：/env [list|set K=V|unset K]\n例如：/env set HTTPS_PROXY=http://127.0.0.1:7890（实例级，所有 Bot 共享）"
 
-// runEnv 解析 /env 的子命令。--global 可以出现在参数任意位置。
+// runEnv 解析 /env 的子命令；所有操作都作用于实例级环境变量。
 func runEnv(_ context.Context, in Input) Result {
-	args, global := splitGlobal(in.Args)
+	args := in.Args
 	if len(args) == 0 || (len(args) == 1 && args[0] == "list") {
-		return listEnv(in, global)
+		return listEnv(in)
 	}
 	switch args[0] {
 	case "list":
 		if len(args) > 1 {
 			return Result{Text: envUsage, OK: false}
 		}
-		return listEnv(in, global)
+		return listEnv(in)
 	case "set":
 		rest := args[1:]
 		if len(rest) == 0 {
@@ -168,85 +168,41 @@ func runEnv(_ context.Context, in Input) Result {
 			}
 			name, value = rest[0], strings.Join(rest[1:], " ")
 		}
-		if err := in.Bot.SetEnv(name, value, global); err != nil {
+		if err := in.Bot.SetEnv(name, value); err != nil {
 			return Result{Text: "设置环境变量失败：" + err.Error(), OK: false}
 		}
-		return Result{Text: fmt.Sprintf("已设置 %s（%s）。", name, envLayerName(global)), OK: true}
+		return Result{Text: fmt.Sprintf("已设置 %s（实例级，所有 Bot 共享）。", name), OK: true}
 	case "unset":
 		rest := args[1:]
 		if len(rest) != 1 || strings.Contains(rest[0], "=") {
 			return Result{Text: envUsage, OK: false}
 		}
-		instance, botVars, err := in.Bot.ListEnv()
+		vars, err := in.Bot.ListEnv()
 		if err != nil {
 			return Result{Text: "读取环境变量失败：" + err.Error(), OK: false}
 		}
-		layer, other := botVars, instance
-		hint := "加 --global 试试"
-		if global {
-			layer, other = instance, botVars
-			hint = "去掉 --global 试试"
+		if _, ok := vars[rest[0]]; !ok {
+			return Result{Text: fmt.Sprintf("实例级没有 %s。", rest[0]), OK: false}
 		}
-		if _, ok := layer[rest[0]]; !ok {
-			msg := fmt.Sprintf("%s没有 %s。", envLayerShort(global), rest[0])
-			if _, ok := other[rest[0]]; ok {
-				msg += "它在另一层，" + hint + "。"
-			}
-			return Result{Text: msg, OK: false}
-		}
-		if err := in.Bot.UnsetEnv(rest[0], global); err != nil {
+		if err := in.Bot.UnsetEnv(rest[0]); err != nil {
 			return Result{Text: "删除环境变量失败：" + err.Error(), OK: false}
 		}
-		return Result{Text: fmt.Sprintf("已删除 %s（%s）。", rest[0], envLayerName(global)), OK: true}
+		return Result{Text: fmt.Sprintf("已删除 %s（实例级）。", rest[0]), OK: true}
 	default:
 		return Result{Text: envUsage, OK: false}
 	}
 }
 
-// splitGlobal 去掉参数里的 --global 标记。
-func splitGlobal(args []string) (rest []string, global bool) {
-	rest = make([]string, 0, len(args))
-	for _, a := range args {
-		if a == "--global" {
-			global = true
-			continue
-		}
-		rest = append(rest, a)
-	}
-	return rest, global
-}
-
-func envLayerName(global bool) string {
-	if global {
-		return "实例级，所有 Bot 共享"
-	}
-	return "bot 级"
-}
-
-func envLayerShort(global bool) string {
-	if global {
-		return "实例级"
-	}
-	return "bot 级"
-}
-
-func listEnv(in Input, global bool) Result {
-	instance, botVars, err := in.Bot.ListEnv()
+func listEnv(in Input) Result {
+	vars, err := in.Bot.ListEnv()
 	if err != nil {
 		return Result{Text: "读取环境变量失败：" + err.Error(), OK: false}
 	}
-	if global {
-		botVars = nil
-	}
-	if len(instance) == 0 && len(botVars) == 0 {
-		if global {
-			return Result{Text: "实例级还没有设置环境变量。用 /env set K=V --global 添加。", OK: true}
-		}
-		return Result{Text: "还没有设置环境变量。用 /env set K=V 添加（加 --global 写实例级）。", OK: true}
+	if len(vars) == 0 {
+		return Result{Text: "还没有设置环境变量。用 /env set K=V 添加。", OK: true}
 	}
 	var b strings.Builder
-	writeEnvLayer(&b, "实例级（--global）", instance)
-	writeEnvLayer(&b, "bot 级", botVars)
+	writeEnvLayer(&b, "实例级（所有 Bot 共享）", vars)
 	// 命令结果会被写成 command.result 事件并进入 SSE 重放，值不能落进事件日志；
 	// 只列变量名与来源，值去设置页看。
 	text := strings.TrimRight(b.String(), "\n") + "\n值请在设置的「环境变量」里查看。"

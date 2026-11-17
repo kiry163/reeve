@@ -33,7 +33,7 @@ class ManifestTest {
 
     @Test
     fun backupsAreDisabled() {
-        // token 存在明文 SharedPreferences 里，不能进云备份或 `adb backup`。
+        // 设备会话令牌存在明文 SharedPreferences 里，不能进云备份或 `adb backup`。
         val app = manifest.getElementsByTagName("application").item(0) as Element
         assertEquals("false", app.getAttributeNS(ANDROID, "allowBackup"))
     }

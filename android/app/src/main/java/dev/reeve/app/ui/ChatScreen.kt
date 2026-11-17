@@ -144,7 +144,6 @@ fun ChatScreen(state: AppState, session: BotSession, nav: Nav) {
                                 menu = false; nav.push(Screen.BotEditor(session.ref.server, session.ref))
                             })
                             DropdownMenuItem(text = { Text("换聊天模型") }, onClick = { menu = false; modelOpen = true })
-                            DropdownMenuItem(text = { Text("自动调度器") }, onClick = { menu = false; nav.tab(Screen.Scheduler) })
                             if (session.regenerateId != null) {
                                 DropdownMenuItem(text = { Text("重新生成最后一条回复") }, onClick = {
                                     menu = false; scope.launch { runCatching { session.regenerate() }.onFailure { error = ServerClient.describe(it) } }

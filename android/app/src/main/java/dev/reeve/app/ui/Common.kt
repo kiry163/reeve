@@ -26,9 +26,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.Button
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,6 +42,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -48,6 +55,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.reeve.app.core.AppState
+import dev.reeve.app.core.BotRef
+import dev.reeve.app.core.BotSession
 
 /** 二级页面的骨架：返回按钮 + 标题 + 可滚动内容 */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -183,7 +193,7 @@ fun FirstRunScreen(onAdd: () -> Unit, onSettings: () -> Unit) {
         Spacer(Modifier.heightIn(min = 32.dp))
         Text(
             "还没装？在服务器上构建并运行 reeve serve（装成常驻服务见 docs/service.md），" +
-                "再运行 reeve pair 打印配对串（地址 + token）。",
+                "再运行 reeve pair 打印配对地址；首次启动打印的初始密码用于登录。",
             style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.width(280.dp),
         )
@@ -192,3 +202,34 @@ fun FirstRunScreen(onAdd: () -> Unit, onSettings: () -> Unit) {
 
 val Shapes16 = RoundedCornerShape(16.dp)
 val Shapes12 = RoundedCornerShape(12.dp)
+
+/** 设置页共用的 Bot 选择行：换 Bot 只换作用域。 */
+@Composable
+fun BotPickerRow(state: AppState, selected: BotRef?, onPick: (BotRef) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val refs = state.allRefs
+    Box {
+        val current = selected?.let { state.session(it)?.profile?.name ?: state.server(it.server)?.profile(it)?.name }
+        val server = selected?.let { state.server(it.server)?.name }
+        val label = listOfNotNull(current, server?.takeIf { it.isNotEmpty() }).joinToString(" · ").ifEmpty { "没有可用的 Bot" }
+        ListRow(
+            "设置哪个 Bot", label, icon = Icons.Outlined.SmartToy,
+            onClick = if (refs.isEmpty()) null else ({ open = true }),
+        )
+        DropdownMenu(open, { open = false }) {
+            refs.forEach { ref ->
+                val name = state.session(ref)?.profile?.name ?: state.server(ref.server)?.profile(ref)?.name ?: ref.bot
+                val server = state.server(ref.server)?.name.orEmpty()
+                DropdownMenuItem(
+                    text = { Text(if (server.isEmpty()) name else "$name · $server") },
+                    onClick = { onPick(ref); open = false },
+                )
+            }
+        }
+    }
+}
+
+fun defaultBotRef(state: AppState): BotRef? =
+    state.allRefs.firstOrNull { state.session(it) != null } ?: state.allRefs.firstOrNull()
+
+fun firstSession(state: AppState): BotSession? = state.allRefs.firstNotNullOfOrNull { state.session(it) }

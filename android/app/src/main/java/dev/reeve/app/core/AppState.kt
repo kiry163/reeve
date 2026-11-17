@@ -16,15 +16,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.UUID
 
-/** 服务器不认这枚 token 时统一给用户看的说明（401 / authenticated=false） */
-private const val TOKEN_REJECTED = "token 不对：服务器不认这枚 token，可能已被轮换或抄漏了"
+/** 服务器不认这枚设备会话时统一给用户看的说明（401 / authenticated=false） */
+private const val LOGIN_REJECTED = "登录已失效：请重新输入服务器密码"
 
 sealed interface ServerStatus {
     data object Connecting : ServerStatus
     data object Online : ServerStatus
-    data object NeedsPairing : ServerStatus
+    data object NeedsLogin : ServerStatus
     data class Offline(val error: String) : ServerStatus
 }
 
@@ -35,19 +34,19 @@ class ServerEntry(config: ServerConfig) {
     var client = ServerClient(config)
     var status by mutableStateOf<ServerStatus>(ServerStatus.Connecting)
     var bots by mutableStateOf<List<BotProfile>>(emptyList())
-    var onNeedsPairing: ((ServerEntry) -> Unit)? = null
+    var onNeedsLogin: ((ServerEntry) -> Unit)? = null
     var poll: Job? = null
 
     val name: String get() = config.name
     val online: Boolean get() = status == ServerStatus.Online
 
-    /** token 失效，需要用户重新配对（换 token） */
-    val needsPairing: Boolean get() = status == ServerStatus.NeedsPairing
+    /** 登录失效，需要用户重新输入密码 */
+    val needsLogin: Boolean get() = status == ServerStatus.NeedsLogin
 
-    fun markNeedsPairing() {
-        if (needsPairing) return
-        status = ServerStatus.NeedsPairing
-        onNeedsPairing?.invoke(this)
+    fun markNeedsLogin() {
+        if (needsLogin) return
+        status = ServerStatus.NeedsLogin
+        onNeedsLogin?.invoke(this)
     }
 
     fun profile(ref: BotRef): BotProfile? =
@@ -126,7 +125,7 @@ class AppState(private val context: Context) {
     }
 
     private fun wire(s: ServerEntry) {
-        s.onNeedsPairing = { entry -> stopSessions(entry) }
+        s.onNeedsLogin = { entry -> stopSessions(entry) }
         startPolling(s)
     }
 
@@ -142,13 +141,13 @@ class AppState(private val context: Context) {
     }
 
     suspend fun refresh(s: ServerEntry) {
-        if (s.needsPairing) return
+        if (s.needsLogin) return
         try {
             s.bots = loadBots(s.client)
             s.status = ServerStatus.Online
             syncSessions(s)
-        } catch (e: NeedsPairing) {
-            s.markNeedsPairing()
+        } catch (e: NeedsLogin) {
+            s.markNeedsLogin()
         } catch (e: ApiException) {
             s.status = ServerStatus.Offline(e.message ?: "离线")
         } catch (e: Exception) {
@@ -191,75 +190,70 @@ class AppState(private val context: Context) {
     }
 
     /**
-     * 配对页的保存：`GET /api/health` 可达且是 reeve（`ok=true`、`api_version` 非空）+
-     * `GET /api/auth/me` 通过（`authenticated=true`）。失败抛 [ApiException]，
-     * 文案区分「连不上」「不像 reeve 服务器」和「token 不对」。成功后走 [connect]；
+     * 配对页的保存：`GET /api/health` 可达且是 reeve（`ok=true`、`api_version` 非空），
+     * 然后用密码 `POST /api/auth/login` 换取设备会话，再 `GET /api/auth/me` 确认。失败抛 [ApiException]，
+     * 文案区分「连不上」「不像 reeve 服务器」和「密码不对」。成功后走 [attach]；
      * 同一 host 已有条目时复用它（保留 id 与 Bot 偏好）。[editing] 非空时无论如何都改这一条：
      * id 强制为它，名称用草稿名称或原名称，避免命中另一台服务器时把别人的名字写进来。
      */
     suspend fun pair(draft: PairDraft, editing: ServerEntry? = null) {
-        val config = runCatching {
+        val target = runCatching {
             val others = servers.map { it.config }
-            if (editing != null) draft.toEditConfig(editing.config, others) else draft.toConfig(others)
+            if (editing != null) draft.toEditTarget(editing.config, others) else draft.toTarget(others)
         }.getOrElse { throw ApiException(it.message ?: "地址格式不对") }
-        val existing = editing ?: server(config.id)
-        val client = ServerClient(config)
+        val existing = editing ?: server(target.id)
+        val probe = ServerClient(ServerConfig(target.id, target.name, target.url, ""))
         val health = try {
-            client.health()
+            probe.health()
         } catch (e: Exception) {
-            throw ApiException("连不上 ${config.url}：${ServerClient.describe(e)}")
+            throw ApiException("连不上 ${target.url}：${ServerClient.describe(e)}")
         }
-        // 只是「有个 HTTP 服务在监听」不算配对成功：必须是 reeve（ok=true 且带 api_version）
+        // 只是「有个 HTTP 服务在监听」不算成功：必须是 reeve（ok=true 且带 api_version）
         if (!health.looksLikeReeve) throw ApiException("这个地址不像 reeve 服务器")
+
+        val password = draft.password.trim()
+        if (password.isEmpty()) throw ApiException("请输入服务器密码")
+        val token = try {
+            probe.login(password).token
+        } catch (e: ApiException) {
+            throw ApiException("登录失败：${e.message}", e.status)
+        }
+        if (token.isEmpty()) throw ApiException("登录失败：服务器没有返回会话")
+
+        val config = ServerConfig(target.id, target.name, target.url, token)
+        val client = ServerClient(config)
         val me = try {
             client.me()
-        } catch (e: NeedsPairing) {
-            throw ApiException(TOKEN_REJECTED, 401)
+        } catch (e: NeedsLogin) {
+            throw ApiException(LOGIN_REJECTED, 401)
         } catch (e: Exception) {
-            throw ApiException("token 校验失败：${ServerClient.describe(e)}", (e as? ApiException)?.status ?: 0)
+            throw ApiException("会话校验失败：${ServerClient.describe(e)}", (e as? ApiException)?.status ?: 0)
         }
-        if (!me.authenticated) throw ApiException(TOKEN_REJECTED, 401)
-        connect(existing, config.name, config.url, config.token)
+        if (!me.authenticated) throw ApiException(LOGIN_REJECTED, 401)
+        attach(existing, config, client)
     }
 
-    /** 添加服务器，或改用新的 token 重新配对 */
-    suspend fun connect(existing: ServerEntry?, name: String, address: String, token: String) {
-        val url = runCatching { ServerConfig.normalize(address) }
-            .getOrElse { throw ApiException("地址格式不对，例如 https://bot.example.com 或 http://1.2.3.4:18800") }
-        val secret = token.trim()
-        if (secret.isEmpty()) throw ApiException("请填写配对串里的 token")
-        var config = ServerConfig(existing?.id ?: UUID.randomUUID().toString(), name.trim(), url, secret)
-        val client = ServerClient(config)
-        client.me()
+    /** 保存登录成功的服务器，并接上事件流。 */
+    private suspend fun attach(existing: ServerEntry?, config: ServerConfig, client: ServerClient) {
         val bots = loadBots(client)
-        if (config.name.isEmpty()) config = config.copy(name = bots.firstOrNull { it.id == "main" }?.name ?: config.baseUrl?.host ?: "reeve")
-        client.config = config
+        var finalConfig = config
+        if (finalConfig.name.isEmpty()) {
+            finalConfig = finalConfig.copy(name = bots.firstOrNull { it.id == "main" }?.name ?: finalConfig.baseUrl?.host ?: "reeve")
+        }
+        client.config = finalConfig
 
-        val s = existing ?: ServerEntry(config).also { servers.add(it) }
+        val s = existing ?: ServerEntry(finalConfig).also { servers.add(it) }
         if (existing != null) {
             stopSessions(existing)
             sessions.keys.filter { it.startsWith(existing.id + "|") }.forEach { sessions.remove(it); unread.remove(it) }
         }
-        s.config = config
+        s.config = finalConfig
         s.client = client
         s.bots = bots
         s.status = ServerStatus.Online
         persist()
         if (existing == null) wire(s) else startPolling(s)
         syncSessions(s)
-    }
-
-    /** 换掉一台服务器的 token（重新配对）；下次轮询用新凭据重连 */
-    fun replaceToken(id: String, token: String) {
-        val s = server(id) ?: return
-        val secret = token.trim()
-        if (secret.isEmpty()) return
-        s.config = s.config.copy(token = secret)
-        s.client.config = s.config
-        s.status = ServerStatus.Connecting
-        persist()
-        stopSessions(s)
-        scope.launch { refresh(s) }
     }
 
     fun remove(s: ServerEntry) {

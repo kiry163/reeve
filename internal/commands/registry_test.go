@@ -98,10 +98,10 @@ func TestHelpFormat(t *testing.T) {
 	r := NewRegistry()
 	r.register(Definition{
 		Name: "env", Summary: "查看/修改环境变量",
-		Usage: "/env [list|set K=V|unset K] [--global]",
+		Usage: "/env [list|set K=V|unset K]",
 		Run:   noopRun,
 	})
-	want := "/env  —  查看/修改环境变量\n  /env [list|set K=V|unset K] [--global]"
+	want := "/env  —  查看/修改环境变量\n  /env [list|set K=V|unset K]"
 	if got := r.help(); got != want {
 		t.Fatalf("help() = %q，期望 %q", got, want)
 	}

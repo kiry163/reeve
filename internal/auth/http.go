@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -14,23 +13,25 @@ import (
 	"time"
 )
 
-// public 是不需要认证的路径：健康检查、登录页及图标、用 token 换 Cookie、查询当前认证方式、清除会话。
+// public 是不需要认证的路径：健康检查、登录页及图标、登录、查询当前认证方式、清除会话。
 // 写请求仍然要过同源检查，登录本身还受失败限速约束。
 func public(path string) bool {
 	switch path {
-	case "/api/health", "/login", "/favicon.svg", "/api/auth/token", "/api/auth/me", "/api/auth/logout":
+	case "/api/health", "/login", "/favicon.svg", "/api/auth/login", "/api/auth/me", "/api/auth/logout":
 		return true
 	}
 	return false
 }
 
 // Middleware 是所有请求的入口：统一加安全响应头、拦截跨站写请求，
-// 然后放行公开路径和已认证请求；其余 /api/* 返回 401，页面跳转到 /login。
+// 然后放行公开路径和已登录请求；其余 /api/* 返回 401，页面跳转到 /login。
+// 本机回环没有例外，所有来源都必须先登录。
 func (g *Guard) Middleware(next http.Handler) http.Handler {
 	lim := newLimiter()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", g.loginPage)
-	mux.HandleFunc("POST /api/auth/token", func(w http.ResponseWriter, r *http.Request) { g.login(w, r, lim) })
+	mux.HandleFunc("POST /api/auth/login", func(w http.ResponseWriter, r *http.Request) { g.login(w, r, lim) })
+	mux.HandleFunc("POST /api/auth/password", g.changePassword)
 	mux.HandleFunc("POST /api/auth/logout", g.logout)
 	mux.HandleFunc("GET /api/auth/me", func(w http.ResponseWriter, r *http.Request) {
 		mode := g.mode(r)
@@ -58,7 +59,7 @@ func (g *Guard) Middleware(next http.Handler) http.Handler {
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{
-				"error": "需要登录：在服务器上运行 reeve pair 获取带 token 的访问地址"})
+				"error": "需要登录：打开登录页输入密码"})
 			return
 		}
 		http.Redirect(w, r, "/login", http.StatusFound)
@@ -85,20 +86,54 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// login 用访问 token 换会话 Cookie。只接受 JSON {"token":"…"} 或表单字段 token；
+// login 用密码换会话。只接受 JSON {"password":"…"} 或表单字段 password；
 // 同一个来源 IP 5 分钟内失败 10 次后返回 429。
+// 网页用 Set-Cookie 保存会话，API 客户端用响应里的 token 作为 Bearer。
 func (g *Guard) login(w http.ResponseWriter, r *http.Request, lim *limiter) {
 	ip, now := clientIP(r), time.Now()
 	if d := lim.blocked(ip, now); d > 0 {
 		w.Header().Set("Retry-After", fmt.Sprint(int(d.Seconds())+1))
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{
-			"error": fmt.Sprintf("访问 token 试错次数太多，请 %s后再试", roundUp(d))})
+			"error": fmt.Sprintf("密码试错次数太多，请 %s后再试", roundUp(d))})
 		return
 	}
+	in, ok := readPasswordRequest(w, r, 4<<10)
+	if !ok {
+		return
+	}
+	valid, err := VerifyPassword(g.DataDir, in.Password)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "服务器还没有可用的登录密码：请在服务器上运行 reeve passwd"})
+		return
+	}
+	if !valid {
+		lim.fail(ip, now)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "密码不对"})
+		return
+	}
+	lim.ok(ip)
+	token, expires, err := g.newSession()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "会话密钥不可用：请在服务器上运行 reeve passwd 重新生成"})
+		return
+	}
+	c := newCookie(token, g.ttl())
+	c.Secure = secureRequest(r)
+	http.SetCookie(w, c)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "token": token, "expires_at": expires.UTC().Format(time.RFC3339)})
+}
+
+// changePassword 修改密码：验证当前密码后写入新哈希，轮换会话密钥，
+// 并给当前调用方签发新会话；其他设备上的旧会话立即失效。
+func (g *Guard) changePassword(w http.ResponseWriter, r *http.Request) {
 	media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	body := http.MaxBytesReader(w, r.Body, 4<<10)
+	body := http.MaxBytesReader(w, r.Body, 8<<10)
 	var in struct {
-		Token string `json:"token"`
+		Current string `json:"current_password"`
+		Next    string `json:"new_password"`
 	}
 	var err error
 	switch media {
@@ -107,36 +142,81 @@ func (g *Guard) login(w http.ResponseWriter, r *http.Request, lim *limiter) {
 	case "application/x-www-form-urlencoded", "":
 		r.Body = body
 		if err = r.ParseForm(); err == nil {
-			in.Token = r.PostForm.Get("token")
+			in.Current = r.PostForm.Get("current_password")
+			in.Next = r.PostForm.Get("new_password")
 		}
 	default:
 		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{
-			"error": "请求必须是 JSON（{\"token\":\"…\"}）或表单"})
+			"error": "请求必须是 JSON 或表单"})
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "请求格式不对：应该是 {\"token\":\"…\"}"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求格式不对"})
 		return
 	}
-	// 比较和签发 Cookie 必须用同一次读到的当前 token，避免轮换正好发生在两者之间。
-	current := g.token()
-	tok := strings.TrimSpace(in.Token)
-	if current == "" || tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(current)) != 1 {
-		lim.fail(ip, now)
-		writeJSON(w, http.StatusUnauthorized, map[string]string{
-			"error": "访问 token 不对：在服务器上运行 reeve token show 查看正确的 token"})
+	valid, err := VerifyPassword(g.DataDir, in.Current)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "服务器还没有可用的登录密码：请在服务器上运行 reeve passwd"})
 		return
 	}
-	lim.ok(ip)
-	c := newCookie(current, g.ttl())
+	if !valid {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "当前密码不对"})
+		return
+	}
+	if err := SetPassword(g.DataDir, in.Next); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	token, expires, err := g.newSession()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "密码已修改，但新会话签发失败；请重新登录"})
+		return
+	}
+	c := newCookie(token, g.ttl())
 	c.Secure = secureRequest(r)
 	http.SetCookie(w, c)
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "token": token, "expires_at": expires.UTC().Format(time.RFC3339)})
 }
 
-// logout 清除会话 Cookie，返回 204。不要求已登录：Cookie 已过期或 token 已轮换时也应该能退出。
-// 清除用的属性（Path/HttpOnly/SameSite）与签发时一致，浏览器才会把这个 Cookie 删掉。
+func readPasswordRequest(w http.ResponseWriter, r *http.Request, limit int64) (struct {
+	Password string `json:"password"`
+}, bool) {
+	var in struct {
+		Password string `json:"password"`
+	}
+	media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	body := http.MaxBytesReader(w, r.Body, limit)
+	var err error
+	switch media {
+	case "application/json":
+		err = json.NewDecoder(body).Decode(&in)
+	case "application/x-www-form-urlencoded", "":
+		r.Body = body
+		if err = r.ParseForm(); err == nil {
+			in.Password = r.PostForm.Get("password")
+		}
+	default:
+		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{
+			"error": "请求必须是 JSON（{\"password\":\"…\"}）或表单"})
+		return in, false
+	}
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "请求格式不对：应该是 {\"password\":\"…\"}"})
+		return in, false
+	}
+	if strings.TrimSpace(in.Password) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "密码不能为空"})
+		return in, false
+	}
+	return in, true
+}
+
+// logout 清除会话 Cookie，返回 204。不要求已登录：Cookie 已过期或密码已修改时也应该能退出。
+// Bearer 令牌是无状态的，退出登录时由客户端自行丢弃；要一次注销所有设备请修改密码。
 func (g *Guard) logout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
@@ -279,17 +359,17 @@ button:disabled{opacity:.6;cursor:default}
 .foot{color:var(--muted);font-size:12px;margin-top:14px}
 </style></head><body><main>
 <div class="brand">reeve</div>
-<form id="f" method="post" action="/api/auth/token">
-<label for="t">访问 token</label><input id="t" name="token" autocomplete="off" spellcheck="false" required autofocus>
+<form id="f" method="post" action="/api/auth/login">
+<label for="p">密码</label><input id="p" name="password" type="password" autocomplete="current-password" required autofocus>
 <button id="b" type="submit">登录</button><div class="err" id="e" role="alert"></div>
 </form>
-{{if .Insecure}}<div class="warn">当前是明文 HTTP 连接，token 会在网络上明文传输。建议只在可信的本机或局域网使用。</div>{{end}}
-<div class="foot">token 在服务器上：运行 <code>reeve token show</code> 查看</div>
+{{if .Insecure}}<div class="warn">当前是明文 HTTP 连接，密码会在网络上明文传输。建议只在可信的本机或局域网使用，或配置 HTTPS。</div>{{end}}
+<div class="foot">初始密码在服务器首次启动时打印；忘了可以在服务器上运行 <code>reeve passwd</code> 重设。</div>
 </main><script>
 const f=document.getElementById('f'),b=document.getElementById('b'),e=document.getElementById('e');
 f.addEventListener('submit',async(ev)=>{ev.preventDefault();b.disabled=true;e.textContent='';
-try{const r=await fetch('/api/auth/token',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',
-body:JSON.stringify({token:f.token.value.trim()})});
+try{const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',
+body:JSON.stringify({password:f.password.value})});
 if(r.ok){location.replace('/');return}const d=await r.json().catch(()=>({}));e.textContent=d.error||('登录失败（'+r.status+'）')}
 catch(_){e.textContent='连不上服务器'}b.disabled=false});
 </script></body></html>`))

@@ -21,31 +21,105 @@ func runService(t *testing.T, args ...string) (stdout, stderr string, code int) 
 	return out.String(), errOut.String(), code
 }
 
-// 登录页文案引导用户运行 reeve token show：它必须打印当前 token 和配对串。
-func TestTokenShowPrintsTokenAndPairString(t *testing.T) {
+// pair 只打印地址；首次运行会同时生成并打印一次初始密码。
+func TestPairPrintsAddressWithoutSecret(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("REEVE_HOME", dir)
 	t.Setenv("REEVE_ADDR", "192.168.1.20:18800")
-	token, _, err := auth.EnsureToken(dir)
+	got := captureStdout(t, func() { pair(nil) })
+	if !strings.Contains(got, "控制台： http://192.168.1.20:18800/") {
+		t.Fatalf("pair 应打印控制台地址：%q", got)
+	}
+	if !strings.Contains(got, "配对串： reeve://pair?v=1&host=192.168.1.20:18800") {
+		t.Fatalf("pair 应打印只有地址的配对串：%q", got)
+	}
+	if strings.Contains(got, "token=") {
+		t.Fatalf("配对串不能再携带密钥：%q", got)
+	}
+	if !strings.Contains(got, "初始登录密码：") {
+		t.Fatalf("首次运行应打印初始密码：%q", got)
+	}
+	if st, err := os.Stat(filepath.Join(dir, "password")); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("应生成 0600 的密码文件：%v", err)
+	}
+}
+
+// passwd 从管道读取两行密码并重设；不需要旧密码。
+func TestPasswdResetsPassword(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("REEVE_HOME", dir)
+	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := w.WriteString("new-password\nnew-password\n"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	old := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = old; r.Close() })
+	captureStdout(t, func() { passwdCmd(nil) })
+	if ok, err := auth.VerifyPassword(dir, "new-password"); err != nil || !ok {
+		t.Fatalf("passwd 后新密码应可登录：%v %v", ok, err)
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	old := os.Stdout
 	os.Stdout = w
-	tokenCmd([]string{"show"})
+	fn()
 	os.Stdout = old
 	w.Close()
 	out, _ := io.ReadAll(r)
-	got := string(out)
-	if !strings.Contains(got, token) {
-		t.Fatalf("token show should print the token: %q", got)
+	return string(out)
+}
+
+func TestServiceEnvRefreshDryRunDoesNotWrite(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("REEVE_HOME", dir)
+	t.Setenv("PATH", "/shell/bin:/usr/bin")
+	t.Setenv("TZ", "UTC")
+	stdout, stderr, code := runService(t, "env", "refresh", "--dry-run")
+	if code != 0 {
+		t.Fatalf("dry-run 应成功：code=%d stderr=%s", code, stderr)
 	}
-	if !strings.Contains(got, "reeve://pair?v=1&host=192.168.1.20:18800&token="+token) {
-		t.Fatalf("token show should print the pair string: %q", got)
+	if !strings.Contains(stdout, "PATH=/shell/bin:/usr/bin") || !strings.Contains(stdout, "TZ=UTC") {
+		t.Fatalf("应打印将导入的变量：%q", stdout)
+	}
+	if !strings.Contains(stdout, "未修改") {
+		t.Fatalf("dry-run 应说明未修改：%q", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "env")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run 不应写 env：%v", err)
+	}
+}
+
+func TestServiceEnvRefreshWritesAndPreservesOtherKeys(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("REEVE_HOME", dir)
+	t.Setenv("PATH", "/shell/bin:/usr/bin")
+	if err := os.WriteFile(filepath.Join(dir, "env"), []byte("CUSTOM=keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code := runService(t, "env", "refresh")
+	if code != 0 {
+		t.Fatalf("refresh 应成功：code=%d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "已更新") || !strings.Contains(stdout, "PATH=/shell/bin:/usr/bin") {
+		t.Fatalf("应打印更新结果：%q", stdout)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "CUSTOM=keep") || !strings.Contains(string(data), "PATH=/shell/bin:/usr/bin") {
+		t.Fatalf("应保留其他键并导入 PATH：%q", data)
 	}
 }
 

@@ -29,7 +29,7 @@ type Request struct {
 	Input        string
 	Instructions string
 	History      []string
-	Env          []string // 三层合并后的环境（不含 reeve 自身凭据）
+	Env          []string // 进程环境 + 实例级 + 调用级合并后的环境（不含 reeve 自身凭据）
 	Model        string
 	MaxDuration  time.Duration
 }

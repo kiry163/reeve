@@ -1,4 +1,4 @@
-import { History, PanelLeft, Pencil, Plus, Settings as SettingsIcon } from 'lucide-react';
+import { PanelLeft, Pencil, Plus, Settings as SettingsIcon } from 'lucide-react';
 import { useState } from 'react';
 import type { BotProfile } from '../api';
 import { BotAvatar } from './BotAvatar';
@@ -6,18 +6,14 @@ import { BotAvatar } from './BotAvatar';
 export default function Sidebar({
   bots,
   activeBotId,
-  schedulerActive,
   onSelectBot,
-  onOpenScheduler,
   onOpenSettings,
   onCreateBot,
   onEditBot,
 }: {
   bots: BotProfile[];
   activeBotId?: string;
-  schedulerActive: boolean;
   onSelectBot: (id: string) => void;
-  onOpenScheduler: () => void;
   onOpenSettings: () => void;
   onCreateBot: () => void;
   onEditBot: (bot: BotProfile) => void;
@@ -52,7 +48,7 @@ export default function Sidebar({
           </header>
           {!collapsed && !bots.length && <p className="px-2 py-1 text-xs text-fg4">还没有 Bot</p>}
           {bots.map((b) => {
-            const active = !schedulerActive && activeBotId === b.id;
+            const active = activeBotId === b.id;
             return (
               <div key={b.id} className={`group flex items-center gap-0.5 rounded-2xl transition ${collapsed ? '' : 'pr-2'} ${
                 active ? 'bg-sidebar-selected text-fg shadow-2xs' : 'text-fg2 hover:bg-sidebar-hover hover:text-fg'
@@ -81,18 +77,6 @@ export default function Sidebar({
       </div>
 
       <nav className="space-y-0.5 px-2 pb-3 pt-1" aria-label="应用导航">
-        <button
-          type="button"
-          onClick={onOpenScheduler}
-          disabled={!activeBotId}
-          title="自动调度器"
-          aria-label="自动调度器"
-          aria-current={schedulerActive ? 'page' : undefined}
-          className={`group flex w-full items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-left text-[12.5px] tracking-tight transition hover:text-fg ${collapsed ? 'h-10 justify-center' : ''} ${schedulerActive ? 'bg-sidebar-selected text-fg' : 'text-fg3 hover:bg-sidebar-hover'}`}
-        >
-          <History size={15} strokeWidth={1.7} aria-hidden="true" className="shrink-0 text-fg4 transition-colors group-hover:text-fg" />
-          {!collapsed && <span>自动调度器</span>}
-        </button>
         <button
           type="button"
           onClick={onOpenSettings}

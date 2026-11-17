@@ -129,6 +129,12 @@ func fakeChat(ms []builtin.Message) builtin.Message {
 		return builtin.Message{Content: "完成：" + res}
 	case strings.Contains(last.Content, "[系统通知]"):
 		return builtin.Message{Content: "需要你在卡片上确认。"}
+	case last.Content == "直接写文件":
+		return toolCall("write_file", map[string]string{"path": "notes/a.txt", "content": "hello"})
+	case last.Content == "直接改文件":
+		return toolCall("edit_file", map[string]string{"path": "notes/a.txt", "old_string": "hello", "new_string": "hi"})
+	case last.Content == "写越界文件":
+		return toolCall("write_file", map[string]string{"path": "../escape.txt", "content": "x"})
 	case strings.Contains(last.Content, "做完了吗"):
 		return toolCall("list_tasks", map[string]string{})
 	case readRe.MatchString(last.Content):

@@ -6,8 +6,8 @@ import java.util.UUID
 /**
  * 待配对的草稿 + 来源。
  *
- * 深链 `reeve://pair?…` 可以由外部 App / 网页触发，地址和 token 都不是用户自己扫码得到的，
- * 所以 [fromExternalLink] 为 true 时，配对页必须展示完整地址并要求用户勾选「我已核对地址」。
+ * 深链 `reeve://pair?…` 只带地址，可以由外部 App / 网页触发，所以 [fromExternalLink] 为 true 时，
+ * 配对页必须展示完整地址并要求用户勾选「我已核对地址」。密码始终由用户自己输入，不进入深链或二维码。
  * 扫码、粘贴、手填都在 App 内部产生，来源不可被外部伪造，[fromExternalLink] 为 false。
  */
 data class PendingPair(val draft: PairDraft, val fromExternalLink: Boolean) {
@@ -22,66 +22,66 @@ data class PendingPair(val draft: PairDraft, val fromExternalLink: Boolean) {
 }
 
 /**
- * 「配对」按钮是否可用：地址与 token 都非空，且外部链接来源必须由用户勾选「我已核对地址」。
- * 草稿来源无法在 UI 里被改写，所以勾选是外部来源唯一的解锁条件。
+ * 「登录」按钮是否可用：地址与密码都非空，且外部链接来源必须由用户勾选「我已核对地址」。
  */
 fun canPair(
     address: String,
-    token: String,
+    password: String,
     fromExternalLink: Boolean,
     addressConfirmed: Boolean,
     busy: Boolean = false,
-): Boolean = !busy && address.isNotBlank() && token.isNotBlank() && (!fromExternalLink || addressConfirmed)
+): Boolean = !busy && address.isNotBlank() && password.isNotBlank() && (!fromExternalLink || addressConfirmed)
+
+/** 登录成功后要保存的服务器地址信息（会话令牌由登录响应提供）。 */
+data class PairTarget(val id: String, val name: String, val url: String)
 
 /**
- * 配对页上的草稿：地址、token、可选名称。
+ * 配对页上的草稿：地址、密码、可选名称。
  *
- * 扫码、粘贴配对串、深链、手填最后都落到同一个草稿；[toConfig] 是唯一把草稿变成
- * 要保存的 [ServerConfig] 的地方，因此 trim、协议补全、重复 host 复用 id 都只有一份实现。
+ * 扫码、粘贴配对串、深链、手填最后都落到同一个草稿；密码只在登录请求里使用，不写入设置。
+ * [toTarget] 是唯一把地址变成要保存的服务器身份的地方，因此 trim、协议补全、重复 host 复用 id
+ * 都只有一份实现。
  */
 data class PairDraft(
     val address: String = "",
-    val token: String = "",
+    val password: String = "",
     val name: String = "",
 ) {
-    /** token 不进日志：toString 只显示是否有值 */
-    override fun toString(): String = "PairDraft(address=$address, token=${if (token.isEmpty()) "<空>" else "<已填>"}, name=$name)"
+    /** 密码不进日志：toString 只显示是否有值 */
+    override fun toString(): String =
+        "PairDraft(address=$address, password=${if (password.isEmpty()) "<空>" else "<已填>"}, name=$name)"
 
     /**
-     * 草稿转成 [ServerConfig]。
+     * 草稿转成服务器身份。
      *
      * - 地址按 [ServerConfig.normalize] 去空白、补协议、去末尾 `/`；
-     * - token 去空白，为空时抛 [IllegalArgumentException]；
      * - 已经有同一 host:port 的服务器时复用它的 `id`（Bot 偏好、会话都挂在 id 上），
      *   名称只在新草稿填了才覆盖；不同 host 用 [newId] 新建。
      */
-    fun toConfig(existing: List<ServerConfig>, newId: String = UUID.randomUUID().toString()): ServerConfig {
+    fun toTarget(existing: List<ServerConfig>, newId: String = UUID.randomUUID().toString()): PairTarget {
         val url = ServerConfig.normalize(address)
-        val secret = token.trim()
-        require(secret.isNotEmpty()) { "请填写配对串里的 token" }
         val same = existing.firstOrNull { sameEndpoint(it.url, url) }
-        return ServerConfig(
+        return PairTarget(
             id = same?.id ?: newId,
             name = name.trim().ifEmpty { same?.name ?: "" },
             url = url,
-            token = secret,
         )
     }
 
     /**
-     * 编辑已有服务器时的配置：`id` 强制为 [target] 的 id，名称只认草稿里填的，否则沿用原名称。
+     * 编辑已有服务器时的身份：`id` 强制为 [target] 的 id，名称只认草稿里填的，否则沿用原名称。
      * 这样即使地址刚好命中列表里另一台服务器，也不会把别人的 id / 名称串过来。
      */
-    fun toEditConfig(target: ServerConfig, existing: List<ServerConfig>): ServerConfig =
-        toConfig(existing).copy(id = target.id, name = name.trim().ifBlank { target.name })
+    fun toEditTarget(target: ServerConfig, existing: List<ServerConfig>): PairTarget =
+        toTarget(existing).copy(id = target.id, name = name.trim().ifBlank { target.name })
 
     companion object {
-        fun fromConfig(c: ServerConfig) = PairDraft(address = c.url, token = c.token, name = c.name)
+        fun fromConfig(c: ServerConfig) = PairDraft(address = c.url, password = "", name = c.name)
 
         /** 配对串（扫码 / 粘贴 / 深链）→ 草稿；不是合法的 `reeve://pair?v=1&…` 时返回 null */
         fun fromPairString(raw: String?): PairDraft? {
             val c = ServerConfig.fromPairUri(raw ?: return null) ?: return null
-            return PairDraft(address = c.url, token = c.token)
+            return PairDraft(address = c.url)
         }
 
         /**

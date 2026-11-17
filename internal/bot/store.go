@@ -152,7 +152,7 @@ func (t TaskRec) Duration() time.Duration {
 func target(tool string, args json.RawMessage) string {
 	var m map[string]any
 	_ = json.Unmarshal(args, &m)
-	for _, k := range []string{"command", "path", "pattern", "task_id", "schedule_id", "query", "name", "title", "cli"} {
+	for _, k := range []string{"command", "path", "pattern", "task_id", "query", "name", "title", "cli"} {
 		if v, ok := m[k].(string); ok && v != "" {
 			return v
 		}

@@ -26,7 +26,7 @@ class MainActivity : ComponentActivity() {
         // 不从 intent 读 EXTRA_REF，外部 App 无法伪造导航。
         openRef.value = reeveApp.state.takePendingRef()
         // 深链 ACTION_VIEW 只在首次创建时处理：重建会重投同一个 ACTION_VIEW，
-        // 那时 Nav 已重建回 Home，再处理一次会重新弹出带 token 的配对页。
+        // 那时 Nav 已重建回 Home，再处理一次会重新弹出配对页。
         if (savedInstanceState == null) handleLink(intent)
         val state = reeveApp.state
         setContent {
@@ -57,10 +57,10 @@ class MainActivity : ComponentActivity() {
 
     private fun handleLink(intent: Intent?) {
         if (intent?.action != Intent.ACTION_VIEW) return
-        // reeve://pair?v=1&host=…&token=…（扫码/系统点开链接）；只预填，不自动保存。
-        // 来源标成外部链接，配对页必须额外确认地址。
+        // reeve://pair?v=1&host=…（扫码/系统点开链接）；只预填地址，不自动保存。
+        // 来源标成外部链接，配对页必须额外确认地址；密码始终由用户输入，不在链接里。
         PendingPair.fromLink(intent.dataString)?.let { reeveApp.state.pendingPair = it }
-        // 消费掉：token 不留在 Intent 里，重建时不会再当深链处理。
+        // 消费掉链接，重建时不会再当深链处理。
         intent.action = Intent.ACTION_MAIN
         intent.data = null
         setIntent(intent)

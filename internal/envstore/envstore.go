@@ -1,10 +1,9 @@
-// Package envstore 管理普通环境变量的三层来源：进程环境（base）→ 实例级 → bot 级 → 单次调用。
+// Package envstore 管理普通环境变量的来源：进程环境（base）→ 实例级 → 单次调用。
 //
 // 文件：
 //   - <实例目录>/env       每行 KEY=VALUE，`#` 开头为注释，权限 0600
-//   - <bot 目录>/env.json  JSON 对象，权限 0600
 //
-// 实例级 env 文件按行 trim 解析，不保留值的首尾空白；需要首尾空白时用 bot 级 env.json。
+// 实例级 env 文件按行 trim 解析，不保留值的首尾空白。
 //
 // 调用级（只对一次命令生效）不落盘：shell 工具的 env 参数由 Overlay 在派发前
 // 叠加到已合并的列表上，优先级最高。
@@ -13,7 +12,6 @@
 package envstore
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,14 +21,6 @@ import (
 	"strings"
 
 	"github.com/kiry163/reeve/internal/atomicfile"
-)
-
-// Layer 标识变量的来源层，用于界面展示与排查。
-type Layer string
-
-const (
-	LayerInstance Layer = "instance"
-	LayerBot      Layer = "bot"
 )
 
 const (
@@ -130,7 +120,7 @@ func SaveInstance(dir string, vars map[string]string) error {
 			return fmt.Errorf("无法保存实例级变量 %s: %w", k, err)
 		}
 		if v := vars[k]; strings.TrimSpace(v) != v {
-			return fmt.Errorf("无法保存实例级变量 %s: 值首尾有空白，实例级 env 文件不保留首尾空白；改用 bot 级 env.json 可以保留", k)
+			return fmt.Errorf("无法保存实例级变量 %s: 值首尾有空白，实例级 env 文件不保留首尾空白", k)
 		}
 		keys = append(keys, k)
 	}
@@ -149,56 +139,7 @@ func SaveInstance(dir string, vars map[string]string) error {
 	return nil
 }
 
-// LoadBot 读 bot 级变量（botDir/env.json）。文件不存在时返回空 map。
-func LoadBot(botDir string) (map[string]string, error) {
-	path := filepath.Join(botDir, "env.json")
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return map[string]string{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("读取 bot 级环境变量 %s 失败: %w，检查这个路径是否可读", path, err)
-	}
-	vars := map[string]string{}
-	if err := json.Unmarshal(data, &vars); err != nil {
-		return nil, fmt.Errorf("bot 级环境变量 %s 损坏: %w，修正为 {\"KEY\":\"VALUE\"} 格式", path, err)
-	}
-	for k, v := range vars {
-		if err := ValidName(k); err != nil {
-			return nil, fmt.Errorf("bot 级环境变量 %s: %w", path, err)
-		}
-		if err := ValidValue(v); err != nil {
-			return nil, fmt.Errorf("bot 级环境变量 %s（%s）: %w", path, k, err)
-		}
-	}
-	return vars, nil
-}
-
-// SaveBot 写 bot 级变量（botDir/env.json，0600），目录不存在时创建。
-func SaveBot(botDir string, vars map[string]string) error {
-	if err := os.MkdirAll(botDir, 0o700); err != nil {
-		return fmt.Errorf("创建 bot 目录 %s 失败: %w，检查上级目录权限", botDir, err)
-	}
-	for k, v := range vars {
-		if err := ValidName(k); err != nil {
-			return fmt.Errorf("无法保存 bot 级变量: %w", err)
-		}
-		if err := ValidValue(v); err != nil {
-			return fmt.Errorf("无法保存 bot 级变量 %s: %w", k, err)
-		}
-	}
-	data, err := json.MarshalIndent(vars, "", "  ")
-	if err != nil {
-		return fmt.Errorf("序列化 bot 级环境变量失败: %w", err)
-	}
-	path := filepath.Join(botDir, "env.json")
-	if err := atomicfile.Write(path, append(data, '\n'), 0o600); err != nil {
-		return fmt.Errorf("写入 bot 级环境变量 %s 失败: %w，检查目录是否可写", path, err)
-	}
-	return nil
-}
-
-// Merge 按 base → layer1 → layer2 … 合并，后者覆盖前者。
+// Merge 按 base → 实例级 → 调用级 合并，后者覆盖前者。
 // 值为空字符串表示删除该键；PATH 特例为前置拼接（新值在前），
 // Windows 上 Path/PATH 视为同一个键。
 // 返回 KEY=VALUE 列表，base 的键保持原顺序，新增键按层内键名排序追加。
