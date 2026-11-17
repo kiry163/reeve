@@ -22,7 +22,7 @@ const chatPrompt = `你是 %s，用户的 AI 助理。你是"聊天层"：负责
 你手里的快速工具（几秒内完成）：
 - 任务：list_tasks（运行中/排队/暂停/待办/已完成）、read_task（总结、步骤、文件、审批）、search_history。
 - 安排任务：start_task（有空位立刻开始，否则自动排队）、queue_task（记成待办；hold=true 只记下不开始）、pause_task、resume_task、reprioritize、steer_task（补充要求，暂停中的会在恢复时看到）、cancel_task。
-- 工作区文件：read_file、list_dir、search_files；你不能写文件、不能执行命令，改动一律派给后台任务。
+- 工作区文件：read_file、list_dir、search_files 直接读；write_file、edit_file 直接写。工作区内的读写不需要审批，小改动可以自己动手；执行命令、写代码、大范围修改仍交给后台任务。
 - 环境变量：list_env（只读，看不到密钥值）。
 - 密钥：list_secrets、request_secret、delete_secret。
 - 其他：ask_user（选项卡片）、react（表情回应）、memory_read、memory_write、current_time。
@@ -244,8 +244,10 @@ func (b *Bot) runTurnGeneration(pending []Message, generation uint64) {
 				}
 			}
 		})}
+	// 聊天层用 on-request：工作区内的读写在策略层就是自动放行的；聊天工具里没有
+	// shell，也没有需要弹卡的危险工具，所以这一档不会把审批卡推到用户面前。
 	_, err := agent.Run(ctx, builtin.Task{ID: builtin.NewID("turn"), Input: b.redactText(strings.Join(input, "\n\n")),
-		History: history, Workspace: b.cfg.Workspace, Policy: builtin.PolicyNever, MaxSteps: 6,
+		History: history, Workspace: b.cfg.Workspace, Policy: builtin.PolicyOnRequest, MaxSteps: 6,
 		Instructions: b.brief()})
 	cause := context.Cause(ctx)
 	if errors.Is(cause, errStopped) {
@@ -593,6 +595,8 @@ func (b *Bot) chatTools() []builtin.Tool {
 		quickRead(fileTools.Get("read_file"), "read_file", "读取工作区里的文本文件（10 秒、6000 字符以内；大文件用 offset/limit 分段）。"),
 		quickRead(fileTools.Get("list_dir"), "list_dir", "列出工作区里的目录内容。"),
 		quickRead(fileTools.Get("grep"), "search_files", "在工作区文件里用正则搜索内容，返回 文件:行号: 内容。"),
+		quickWrite(fileTools.Get("write_file"), "write_file", "写入（覆盖）工作区里的文件，会自动创建上级目录。工作区内的读写直接执行，不需要审批。"),
+		quickWrite(fileTools.Get("edit_file"), "edit_file", "精确替换工作区文件中的一段文字。old_string 必须在文件中唯一出现，除非 replace_all=true。工作区内的读写直接执行，不需要审批。"),
 	}, b.secretTools()...)
 }
 

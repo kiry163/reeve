@@ -32,7 +32,7 @@ type Config struct {
 	AgentProvider builtin.Provider
 	AgentModel    string
 	Policy        builtin.Policy
-	ChatPolicy    builtin.Policy // 聊天层直接写文件时的审批模式，默认 untrusted（每次写都要你确认）
+	ChatPolicy    builtin.Policy // 聊天层派外部执行器任务、删除密钥时的审批模式，默认 untrusted（每次都要你确认）
 	Rules         builtin.Rules
 	MaxConcurrent int           // 所有 Bot 合计同时运行的后台任务上限（MAX_CONCURRENT），默认 3
 	TaskMaxTime   time.Duration // 单个任务最长运行时间，默认 30 分钟

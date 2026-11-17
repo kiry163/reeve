@@ -11,8 +11,8 @@
 
 ## What it is
 
-- **Two layers, one rule**: the chat layer (a fast model) understands, checks facts, dispatches and reports — it has **no execution rights**. A pure-Go supervisor queues work and hands it to an executor that can read/write files and run commands.
-- **Dangerous work needs your click**: the default approval policy is `untrusted` — reads pass, writes and commands raise a card. Each approval is bound to that one call and cannot be reused.
+- **Two layers, one rule**: the chat layer (a fast model) understands, checks facts, dispatches, reports and reads/writes workspace files directly. Commands and heavier work go to a pure-Go supervisor, which queues them and hands them to an executor.
+- **Dangerous work needs your click**: background tasks default to the `untrusted` approval policy — reads pass, writes and commands raise a card. Workspace reads/writes from the chat layer need no approval. Each approval is bound to that one call and cannot be reused.
 - **Events are the truth**: every bot appends to its own `stream.jsonl`; clients resume with SSE + `Last-Event-ID`; in-memory state is rebuilt by replaying events at startup.
 - **Two clients, one protocol**: an embedded React console and a native Android app (Kotlin + Compose) over REST writes and SSE reads.
 - **Single binary, single port**: HTTP, SSE, the web UI and uploads share one listener. No database, no queue, no web framework.
@@ -23,7 +23,7 @@
 |---|---|
 | Bots | Up to 32, each with its own workspace, memory, secrets, env vars and model |
 | Executors | Built-in agent (any OpenAI-compatible model) by default; `codex` / `pi` / `omp` CLIs as explicit upgrades |
-| Approvals | Rules → policy → card; one approval is bound to a single call, reusable for identical calls within the same task |
+| Approvals | Rules → policy → card; one approval is bound to a single call, reusable for identical calls within the same task; chat-layer workspace reads/writes are auto-approved |
 | Env vars | Instance-level + per-call; readable by the model, writes audited; service install imports PATH/timezone/proxy/TLS from your shell; secrets never enter env |
 | Vault | AES-256-GCM at rest; the model only sees placeholders, outputs are redacted |
 | Skills | Local `SKILL.md`, indexed into the system prompt, body read on demand |

@@ -198,6 +198,24 @@ func (b *Bot) searchHistory(q string, limit int) string {
 	return strings.Join(hits, "\n")
 }
 
+// quickWrite 包装工作区写工具：限时、截断输出。聊天层的工作区读写不需要审批，
+// 由 runChat 的 on-request 策略直接放行；路径仍然被 ResolvePath 锁在工作区内。
+func quickWrite(t builtin.Tool, name, desc string) builtin.Tool {
+	return builtin.FuncTool{ToolName: name, Desc: desc, JSONSchema: string(t.Schema()), RiskFn: t.Risk,
+		Fn: func(ctx context.Context, env builtin.ToolEnv, args json.RawMessage) (string, error) {
+			ctx, cancel := context.WithTimeout(ctx, quickTimeout)
+			defer cancel()
+			out, err := t.Execute(ctx, env, args)
+			if ctx.Err() != nil {
+				return builtin.Truncate(out, quickMaxOut), errors.New("超过 10 秒没完成，这类事请交给 start_task")
+			}
+			if len(out) > quickMaxOut {
+				out = builtin.Truncate(out, quickMaxOut)
+			}
+			return out, err
+		}}
+}
+
 // quickRead 包装 reeve 的只读工具：限时、限大小、截断输出。
 func quickRead(t builtin.Tool, name, desc string) builtin.Tool {
 	return builtin.FuncTool{ToolName: name, Desc: desc, JSONSchema: string(t.Schema()), RiskFn: t.Risk,
@@ -287,6 +305,10 @@ func toolLabel(name string, args json.RawMessage) string {
 		return "查看了目录 " + tg
 	case "search_files":
 		return "搜索了文件「" + tg + "」"
+	case "write_file":
+		return "写入了 " + tg
+	case "edit_file":
+		return "修改了 " + tg
 	case "memory_read":
 		return "读取了记忆"
 	case "memory_write":
