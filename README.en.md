@@ -28,6 +28,7 @@
 | Vault | AES-256-GCM at rest; the model only sees placeholders, outputs are redacted |
 | Skills | Local `SKILL.md`, indexed into the system prompt, body read on demand |
 | Slash commands | Parsed by the server and **never sent to the model**: `/help` `/stop` `/clear` `/model` `/agent` `/env` `/skills` `/context` `/tasks` `/approve` |
+| Push | Optional self-hosted ntfy: approvals, task results and replies; tapping opens the matching chat. No FCM/Google |
 | Service | `reeve service install` sets up launchd (macOS) or systemd `--user` (Linux) |
 
 Architecture, event catalogue and design rationale live in [docs/superpowers/specs/2026-11-14-reeve-design.md](docs/superpowers/specs/2026-11-14-reeve-design.md) (Chinese).
@@ -127,7 +128,7 @@ Android toolchain setup is in [docs/android.md](docs/android.md); CI builds and 
 - **No TLS**: plain HTTP. Trusted LANs only; use Tailscale or an SSH tunnel across networks.
 - **Single user**: no multi-tenancy, registration or per-user isolation. Do not expose it to the internet.
 - **Platforms**: service install supports macOS and Linux; on Windows only foreground `serve`.
-- **No system push**: Android relies on a foreground service plus local notifications; nothing is delivered after the OS kills the app.
+- **Push requires self-hosted ntfy**: disabled by default; configure it under Settings › Push. The phone needs the ntfy app (non-FCM build) and a battery whitelist, otherwise delivery may be delayed. No FCM/Google.
 - **Not planned**: MCP, provider fallback chains, migration from older versions, iOS or desktop clients.
 
 ## License

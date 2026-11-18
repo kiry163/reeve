@@ -14,7 +14,6 @@ import androidx.core.content.ContextCompat
 import dev.reeve.app.core.AppState
 import dev.reeve.app.core.BotSession
 import dev.reeve.app.core.CH_ALERTS
-import dev.reeve.app.core.CH_KEEPALIVE
 import dev.reeve.app.core.CH_REPLIES
 import dev.reeve.app.core.NewsKind
 import dev.reeve.app.core.notifyChannel
@@ -36,13 +35,10 @@ class ReeveApp : Application() {
         nm.createNotificationChannel(NotificationChannel(CH_REPLIES, "任务与回复", NotificationManager.IMPORTANCE_DEFAULT).apply {
             description = "任务结束、助手的新回复"
         })
-        nm.createNotificationChannel(NotificationChannel(CH_KEEPALIVE, "保持连接", NotificationManager.IMPORTANCE_MIN).apply {
-            description = "常驻通知，让 App 在后台也能及时收到审批和任务提醒"
-            setShowBadge(false)
-        })
+        // 旧版本的前台保活渠道：升级后把常驻通知一起清掉。
+        nm.deleteNotificationChannel("keepalive")
         state = AppState(this)
         state.onNotify = ::postNotice
-        if (state.keepAlive) runCatching { KeepAliveService.start(this) }
     }
 
     /** 正文只有一句摘要（≤ [dev.reeve.app.core.SUMMARY_LIMIT] 字），不含会话令牌与工具参数原文。 */

@@ -55,7 +55,8 @@ type Bots struct {
 	retired  sync.WaitGroup
 	sharedMu sync.Mutex
 	closed   bool
-	gateway  *cliGateway // 给 Pi 等外部 CLI 用的本机模型网关
+	gateway  *cliGateway  // 给 Pi 等外部 CLI 用的本机模型网关
+	push     *pushManager // 实例级 ntfy 推送
 }
 
 type botEndpoint struct {
@@ -108,6 +109,11 @@ func OpenBots(cfg Config) (*Bots, error) {
 		}
 		bs.runtimes[p.ID], bs.handlers[p.ID] = b, &botEndpoint{Handler: b.Handler("")}
 		b.coordinator = bs
+	}
+	// 推送在 Start 之前挂上：只推新事件，启动重放和 recover 产生的历史事件不打扰用户。
+	bs.push = newPushManager(main.cfg.DataDir, main.vault)
+	for _, b := range bs.runtimes {
+		bs.push.attach(b)
 	}
 	for _, b := range bs.runtimes {
 		b.Start()
@@ -187,6 +193,9 @@ func (bs *Bots) Close() {
 	}
 	bs.closed = true
 	bs.mu.Unlock()
+	if bs.push != nil {
+		bs.push.close()
+	}
 	if bs.gateway != nil {
 		bs.gateway.Close()
 	}
@@ -309,6 +318,9 @@ func (bs *Bots) setProfile(id string, p BotProfile) (BotProfile, error) {
 		}
 		bs.runtimes[p.ID], bs.handlers[p.ID] = b, &botEndpoint{Handler: b.Handler("")}
 		b.coordinator = bs
+		if bs.push != nil {
+			bs.push.attach(b)
+		}
 		b.Start()
 	}
 	bs.profiles = next
@@ -345,6 +357,34 @@ func (bs *Bots) Handler(ui fs.FS) http.Handler {
 	})
 	mux.HandleFunc("PUT /api/env", func(w http.ResponseWriter, r *http.Request) {
 		handleEnvPut(w, r, bs.main.ReplaceInstanceEnv)
+	})
+	// 实例级 ntfy 推送：地址/topic/token 和三个事件开关，配置存 <实例目录>/push.json。
+	mux.HandleFunc("GET /api/push", func(w http.ResponseWriter, r *http.Request) {
+		if bs.push == nil {
+			writeJSON(w, pushView{}, nil)
+			return
+		}
+		writeJSON(w, bs.push.view(), nil)
+	})
+	mux.HandleFunc("PUT /api/push", func(w http.ResponseWriter, r *http.Request) {
+		if bs.push == nil {
+			writeJSON(w, pushView{}, errors.New("推送未初始化"))
+			return
+		}
+		var d pushDraft
+		if !decodeJSON(w, r, &d, 16<<10) {
+			return
+		}
+		view, err := bs.push.update(d)
+		writeJSON(w, view, err)
+	})
+	mux.HandleFunc("POST /api/push/test", func(w http.ResponseWriter, r *http.Request) {
+		if bs.push == nil {
+			writeJSON(w, map[string]bool{"ok": false}, errors.New("推送未初始化"))
+			return
+		}
+		err := bs.push.test(r.Context())
+		writeJSON(w, map[string]bool{"ok": err == nil}, err)
 	})
 	mux.HandleFunc("GET /api/commands", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, commandList{Commands: bs.main.commandInfos()}, nil)

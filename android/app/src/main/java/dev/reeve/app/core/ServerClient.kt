@@ -33,6 +33,17 @@ data class ServerConfig(val id: String, val name: String, val url: String, val t
     /** 明文 HTTP 且不是本机地址：密码（登录时）和会话令牌在网络上不加密 */
     val insecure: Boolean get() = baseUrl?.let { it.scheme == "http" && !isLoopback(it.host) } ?: false
 
+    /**
+     * 通知深链里的 host[:port] 是否指向这台服务器。
+     * 带端口时精确比较；不带端口时接受 HTTP/HTTPS 默认端口（80/443）。
+     */
+    fun matchesHost(linkHost: String): Boolean {
+        val u = baseUrl ?: return false
+        val (host, port) = splitHostPort(linkHost.trim())
+        if (!u.host.equals(host, ignoreCase = true)) return false
+        return if (port != null) u.port == port else u.port == 80 || u.port == 443
+    }
+
     fun json(): JSONObject = JSONObject().put("id", id).put("name", name).put("url", url).put("token", token)
 
     companion object {
@@ -76,7 +87,25 @@ data class ServerConfig(val id: String, val name: String, val url: String, val t
             return ip || isLoopback(host)
         }
 
-        private fun query(raw: String?): Map<String, String> {
+        /** 解析 host[:port]；IPv6 用 [..] 包裹。没有端口时返回 null。 */
+        private fun splitHostPort(raw: String): Pair<String, Int?> {
+            if (raw.startsWith("[")) {
+                val end = raw.indexOf(']')
+                if (end < 0) return raw to null
+                val host = raw.substring(1, end)
+                val rest = raw.substring(end + 1)
+                return host to rest.removePrefix(":").takeIf { it.isNotEmpty() }?.toIntOrNull()
+            }
+            val idx = raw.lastIndexOf(':')
+            if (idx > 0) {
+                val port = raw.substring(idx + 1).toIntOrNull()
+                if (port != null) return raw.substring(0, idx) to port
+            }
+            return raw to null
+        }
+
+        // 供配对串和 reeve://open 深链共用；保留字面 `+`，只解码百分号编码。
+        internal fun query(raw: String?): Map<String, String> {
             if (raw.isNullOrEmpty()) return emptyMap()
             return raw.split('&').mapNotNull { part ->
                 if (part.isEmpty()) return@mapNotNull null
@@ -85,7 +114,7 @@ data class ServerConfig(val id: String, val name: String, val url: String, val t
             }.toMap()
         }
 
-        private fun decode(s: String): String =
+        internal fun decode(s: String): String =
             runCatching { URLDecoder.decode(s.replace("+", "%2B"), "UTF-8") }.getOrDefault(s)
     }
 }

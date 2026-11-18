@@ -3,6 +3,20 @@
 本项目的变更记录，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- **可选 ntfy 推送**：网页「设置 › 推送」配置自建 ntfy 的地址/topic/token，服务端在审批请求、
+  任务终态、助手最终回复时推送；Android 点击通知通过 `reeve://open` 直达对应聊天。
+  不依赖 FCM/Google，通知载荷不含聊天正文或工具参数。
+- Android 新增「使用 ntfy 外部推送」开关：开启后关闭 App 内本地通知，避免前台重复提醒。
+
+### 变更
+
+- 移除 Android 的前台保活服务 `KeepAliveService` 和 `keepalive` 通知渠道；后台通知交给 ntfy，
+  App 打开时按 `Last-Event-ID` 补齐事件。这也避开了 Android 15 对 `dataSync` 前台服务的 6 小时限制。
+
 ## [0.1.0] - 2026-11-17
 
 首个公开版本：单二进制、单端口的本机助理编排器，网页与 Android 共用一套 REST + SSE 协议。

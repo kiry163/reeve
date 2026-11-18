@@ -21,6 +21,7 @@
 | 有效期 | 30 天；过期或改密后 → 401 |
 | 改密 | `POST /api/auth/password` `{current_password,new_password}`，轮换会话密钥，所有旧会话立即 401 |
 | 配对串 | `reeve://pair?v=1&host=<addr>`（**只含地址**，密码由用户在 App 里输入） |
+| 通知深链 | `reeve://open?bot=<id>&host=<host[:port]>`（外部 ntfy 点击用；只导航到已配置服务器，不带凭据；host 可省略） |
 | 回环免认证 | 无；局域网、模拟器的 `10.0.2.2` 与本机回环都必须登录 |
 
 `/api/auth/me` → `{"ok":true,"enabled":true,"authenticated":bool,"mode":"bearer|session|none"}`。
@@ -48,6 +49,8 @@
 | `PATCH /api/bots/{id}` | `{name,instructions}` | `BotProfile` |
 | `DELETE /api/bots/{id}?purge=1` | — | `{"ok":true}`（`main` → 400） |
 | `GET /api/env` `PUT /api/env` | PUT `{"vars":{K:V}}`（**整体替换**，实例级，所有 Bot 共用） | `{"vars":{K:V}}` / `{"ok":bool,"warnings":[…]}` |
+| `GET /api/push` `PUT /api/push` | PUT `{enabled,url,topic,public_host,approval,task,reply,token?}`（token 省略=保留，空串=清除） | `{enabled,url,topic,public_host,approval,task,reply,has_token}` |
+| `POST /api/push/test` | — | `{"ok":true}`；ntfy 返回错误时 400 + `{"error":"…"}` |
 | `GET /api/commands` | — | `{"commands":[{name,aliases:[],summary,usage}]}` |
 | `GET /api/channels` `POST /api/channels` | `{"providers":[APIChannel]}` | `{"providers":[APIChannel],"usage":[{bot_id,name,chat_provider_id,agent_provider_id,agent_cli}]}` |
 | `GET /api/settings` `POST /api/settings` | `APISettings` | `APISettings` |

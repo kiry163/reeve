@@ -30,6 +30,7 @@ reeve 是一个装在**自己机器**上的助理平台，不连任何第三方 
 | 密钥库 | AES-256-GCM 加密，模型只看到占位符，输出统一脱敏 |
 | 技能 | 本地 `SKILL.md` 索引进系统提示，正文按需读取 |
 | 斜线命令 | 服务端解析，**不进模型上下文**：`/help` `/stop` `/clear` `/model` `/agent` `/env` `/skills` `/context` `/tasks` `/approve` |
+| 推送 | 可选自建 ntfy：审批、任务结束、助手回复推到手机，点击直达对应聊天；不依赖 FCM/Google |
 | 常驻服务 | macOS launchd / Linux systemd `--user`，`reeve service install` 一条命令装好 |
 
 ## 架构
@@ -169,7 +170,8 @@ Android 目标的工具链配置见 [docs/android.md](docs/android.md)；Android
 - **没有 TLS**：明文 HTTP，请只在可信局域网使用；跨网络用 Tailscale 或 SSH 隧道。
 - **单用户**：没有多租户、注册、权限隔离；不适合直接暴露到公网。
 - **平台**：服务安装只支持 macOS 与 Linux；Windows 目前只能前台 `serve`。
-- **无系统推送**：Android 靠前台服务保活 + 本地通知，进程被系统回收后不会主动送达。
+- **推送依赖自建 ntfy**：默认关闭，需要在网页「设置 › 推送」里配置；手机端要装 ntfy（无 FCM 构建）
+  并给电池白名单，否则通知可能延迟。不经过 FCM/Google。
 - **不做**：MCP、provider fallback 链、旧版本数据迁移、iOS/桌面客户端。
 
 ## 许可

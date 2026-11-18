@@ -1,6 +1,7 @@
 package dev.reeve.app
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -44,5 +45,38 @@ class ManifestTest {
         assertNotNull("manifest 里缺少 .RouteActivity", route)
         assertEquals("false", route!!.getAttributeNS(ANDROID, "exported"))
         assertEquals(ROUTE_THEME, route.getAttributeNS(ANDROID, "theme"))
+    }
+
+    @Test
+    fun mainActivityAcceptsOpenDeepLink() {
+        val activity = activityNamed(".MainActivity")
+        assertNotNull("manifest 里缺少 .MainActivity", activity)
+        val filters = activity!!.getElementsByTagName("intent-filter")
+        val found = (0 until filters.length).any { i ->
+            val filter = filters.item(i) as Element
+            val actions = filter.getElementsByTagName("action")
+            val isView = (0 until actions.length).any {
+                (actions.item(it) as Element).getAttributeNS(ANDROID, "name") == "android.intent.action.VIEW"
+            }
+            val data = filter.getElementsByTagName("data")
+            val opens = (0 until data.length).any {
+                val d = data.item(it) as Element
+                d.getAttributeNS(ANDROID, "scheme") == "reeve" && d.getAttributeNS(ANDROID, "host") == "open"
+            }
+            isView && opens
+        }
+        assertTrue("MainActivity 缺少 reeve://open 深链", found)
+    }
+
+    @Test
+    fun keepAliveForegroundServiceIsGone() {
+        val services = manifest.getElementsByTagName("service")
+        val serviceNames = (0 until services.length).map { (services.item(it) as Element).getAttributeNS(ANDROID, "name") }
+        assertFalse(".KeepAliveService" in serviceNames)
+
+        val perms = manifest.getElementsByTagName("uses-permission")
+        val permNames = (0 until perms.length).map { (perms.item(it) as Element).getAttributeNS(ANDROID, "name") }
+        assertFalse("android.permission.FOREGROUND_SERVICE" in permNames)
+        assertFalse("android.permission.FOREGROUND_SERVICE_DATA_SYNC" in permNames)
     }
 }

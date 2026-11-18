@@ -97,6 +97,26 @@ export type EnvAPI = {
   save: (vars: EnvVars) => Promise<EnvSaveResult>;
 };
 
+// ---------- 实例级推送（自建 ntfy） ----------
+
+// token 只写不读：GET 只返回 has_token，保存时省略 token 表示保留，空串表示清除。
+export type PushSettings = {
+  enabled: boolean;
+  url: string;
+  topic: string;
+  public_host: string;
+  approval: boolean;
+  task: boolean;
+  reply: boolean;
+  has_token: boolean;
+};
+export type PushDraft = Omit<PushSettings, 'has_token'> & { token?: string };
+export type PushAPI = {
+  get: (signal?: AbortSignal) => Promise<PushSettings>;
+  save: (draft: PushDraft) => Promise<PushSettings>;
+  test: () => Promise<{ ok: boolean }>;
+};
+
 export type CommandInfo = { name: string; aliases: string[]; summary: string; usage: string };
 
 export type SkillInfo = { name: string; description: string; when_to_use: string; path: string };
@@ -329,6 +349,27 @@ function envAPI(base: string): EnvAPI {
   };
 }
 
+// 实例级推送开关和 ntfy 地址；和 envAPI 一样直接访问 /api。
+function pushAPI(base: string): PushAPI {
+  return {
+    get: async (signal?: AbortSignal): Promise<PushSettings> => {
+      const v = await get<PushSettings>(`${base}/push`, signal);
+      return {
+        enabled: !!v.enabled,
+        url: typeof v.url === 'string' ? v.url : '',
+        topic: typeof v.topic === 'string' ? v.topic : '',
+        public_host: typeof v.public_host === 'string' ? v.public_host : '',
+        approval: v.approval !== false,
+        task: v.task !== false,
+        reply: v.reply !== false,
+        has_token: !!v.has_token,
+      };
+    },
+    save: (draft: PushDraft): Promise<PushSettings> => post(`${base}/push`, draft, 'PUT'),
+    test: (): Promise<{ ok: boolean }> => post(`${base}/push/test`),
+  };
+}
+
 function skillIndex(raw: SkillIndex): SkillIndex {
   return { skills: raw.skills ?? [], errors: raw.errors ?? [] };
 }
@@ -454,6 +495,8 @@ export function createSettingsAPI(bot = 'main'): SettingsAPI {
 export const api = {
   // 实例级环境变量：所有 Bot 共用同一份。
   env: envAPI('/api'),
+  // 实例级 ntfy 推送。
+  push: pushAPI('/api'),
   bots: (signal?: AbortSignal): Promise<BotProfile[]> => get('/api/bots', signal),
   createBot: (draft: BotDraft): Promise<BotProfile> => post('/api/bots', draft),
   editBot: (id: string, draft: BotDraft): Promise<BotProfile> => post(botPath(id), draft, 'PATCH'),

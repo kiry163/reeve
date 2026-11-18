@@ -55,9 +55,10 @@ class ServerEntry(config: ServerConfig) {
 
 /** 偏好设置 */
 class Prefs(private val sp: SharedPreferences) {
-    var keepAlive: Boolean
-        get() = sp.getBoolean("keepAlive", false)
-        set(v) = sp.edit().putBoolean("keepAlive", v).apply()
+    /** 通知由服务端的 ntfy 发；开启后 App 不再本地提醒，避免前台两条通知。 */
+    var externalPush: Boolean
+        get() = sp.getBoolean("externalPush", false)
+        set(v) = sp.edit().putBoolean("externalPush", v).apply()
     var appearance: String
         get() = sp.getString("appearance", "system") ?: "system"
         set(v) = sp.edit().putString("appearance", v).apply()
@@ -89,8 +90,9 @@ class AppState(private val context: Context) {
     var pendingPair by mutableStateOf<PendingPair?>(null)
 
     /**
-     * 通知点击要打开的聊天（`RouteActivity` 写入，`MainActivity` 消费）。
-     * 只在进程内传递，外部 Intent 无法伪造，因此 MainActivity 不需要从 intent 里读聊天引用。
+     * 本地通知点击要打开的聊天（`RouteActivity` 写入，`MainActivity` 消费）。
+     * ref 只在进程内传递；外部 App 只能通过 `reeve://open` 按 host/bot 导航到已配置的服务器，
+     * 不能直接注入 serverId|botId 或凭据。
      */
     var pendingRef by mutableStateOf<BotRef?>(null)
 
@@ -99,11 +101,13 @@ class AppState(private val context: Context) {
 
     var foreground = false
     var appearance by mutableStateOf(prefs.appearance)
-    var keepAlive by mutableStateOf(prefs.keepAlive)
+    var externalPush by mutableStateOf(prefs.externalPush)
 
     var onNotify: ((BotSession, String, NewsKind) -> Unit)? = null
 
     init {
+        // 前台保活已移除：清掉旧版本留下的开关，避免以后重新引入时意外启动。
+        sp.edit().remove("keepAlive").apply()
         val list = runCatching { JSONArray(sp.getString("servers", "[]")) }.getOrElse { JSONArray() }
         for (j in list.objects()) servers.add(ServerEntry(ServerConfig.from(j)))
         servers.forEach(::wire)
@@ -287,7 +291,7 @@ class AppState(private val context: Context) {
     }
 
     fun changeAppearance(v: String) { prefs.appearance = v; appearance = v }
-    fun changeKeepAlive(v: Boolean) { prefs.keepAlive = v; keepAlive = v }
+    fun changeExternalPush(v: Boolean) { prefs.externalPush = v; externalPush = v }
 
     fun markRead(ref: BotRef) { unread.remove(ref.key) }
 
@@ -299,5 +303,10 @@ class AppState(private val context: Context) {
     }
 
     private val notifySwitches: NotifySwitches
-        get() = NotifySwitches(prefs.notifyApproval, prefs.notifyTask, prefs.notifyReply)
+        get() = NotifySwitches(
+            approval = prefs.notifyApproval,
+            task = prefs.notifyTask,
+            reply = prefs.notifyReply,
+            local = !externalPush,
+        )
 }

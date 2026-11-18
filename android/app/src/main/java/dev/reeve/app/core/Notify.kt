@@ -11,20 +11,21 @@ const val CH_ALERTS = "alerts"
 /** `replies`：任务结束与助手的新回复。 */
 const val CH_REPLIES = "replies"
 
-/** `keepalive`：前台服务的常驻通知（MIN、无角标）。 */
-const val CH_KEEPALIVE = "keepalive"
-
 /** 通知正文最多这么多字符；不含会话令牌，也不放工具参数原文。 */
 const val SUMMARY_LIMIT = 120
 
 /** 审批提醒的固定文案：不带工具名、参数和风险等级以外的任何原始内容。 */
 const val APPROVAL_NOTICE = "有一个操作等你确认"
 
-/** 三类提醒各自的开关（默认全开，持久化在 [Prefs]）。 */
+/**
+ * 三类提醒各自的开关（默认全开，持久化在 [Prefs]）。
+ * [local] 为 false 表示通知交给服务端 ntfy，App 不再自己弹本地通知。
+ */
 data class NotifySwitches(
     val approval: Boolean = true,
     val task: Boolean = true,
     val reply: Boolean = true,
+    val local: Boolean = true,
 ) {
     fun allows(kind: NewsKind): Boolean = when (kind) {
         NewsKind.Approval -> approval
@@ -79,7 +80,7 @@ fun taskNotice(title: String, verb: String, limit: Int = SUMMARY_LIMIT): String 
  * 后台即使会话还停在那个页面（`viewing` 没清）也必须提醒。
  */
 fun shouldNotify(kind: NewsKind, switches: NotifySwitches, foreground: Boolean, viewingThisBot: Boolean): Boolean =
-    switches.allows(kind) && !(foreground && viewingThisBot)
+    switches.local && switches.allows(kind) && !(foreground && viewingThisBot)
 
 /**
  * 通知标题：只有一台服务器时只写 Bot 名，多台时带上服务器名。

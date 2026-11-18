@@ -155,4 +155,14 @@ class NotifyTest {
         }
         assertTrue(NotifySwitches().allows(NewsKind.Approval))
     }
+
+    @Test
+    fun externalPushSuppressesAllLocalNotifications() {
+        val external = NotifySwitches(local = false)
+        for (kind in NewsKind.entries) {
+            assertFalse(kind.name, shouldNotify(kind, external, foreground = false, viewingThisBot = false))
+            assertFalse(kind.name, shouldNotify(kind, external, foreground = true, viewingThisBot = false))
+        }
+        assertTrue(external.allows(NewsKind.Approval))
+    }
 }

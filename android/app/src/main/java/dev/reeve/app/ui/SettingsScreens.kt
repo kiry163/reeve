@@ -22,7 +22,6 @@ import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Notifications
-import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.OpenInBrowser
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.SmartToy
@@ -63,7 +62,6 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.reeve.app.BuildConfig
-import dev.reeve.app.KeepAliveService
 import dev.reeve.app.R
 import dev.reeve.app.core.AgentConnections
 import dev.reeve.app.core.ApiChannel
@@ -105,12 +103,6 @@ fun SettingsScreen(state: AppState, nav: Nav) {
             ListRow("执行器", "白名单、默认执行器与外部 CLI", Icons.Outlined.Memory, chevron = true, onClick = { nav.push(Screen.Executors()) })
             ListRow("技能", "服务器加载的技能索引", Icons.AutoMirrored.Outlined.MenuBook, chevron = true, onClick = { nav.push(Screen.Skills()) })
             SectionLabel("通用")
-            SwitchRow(
-                "后台保持连接", "用一条常驻通知保持连接，审批和任务结束能马上提醒你", Icons.Outlined.NotificationsActive, state.keepAlive,
-            ) { on ->
-                state.changeKeepAlive(on)
-                if (on) runCatching { KeepAliveService.start(context) } else KeepAliveService.stop(context)
-            }
             ListRow("通知", "等你确认、任务结束、新回复", Icons.Outlined.Notifications, chevron = true, onClick = { nav.push(Screen.Notifications) })
             ListRow("外观", when (state.appearance) { "light" -> "浅色"; "dark" -> "深色"; else -> "跟随系统" }, Icons.Outlined.Palette, chevron = true,
                 onClick = { nav.push(Screen.Appearance) })
@@ -135,11 +127,28 @@ fun NotificationsScreen(state: AppState, nav: Nav) {
     var t by remember { mutableStateOf(state.prefs.notifyTask) }
     var r by remember { mutableStateOf(state.prefs.notifyReply) }
     SubPage("通知", nav) {
-        SectionLabel("提醒我")
-        SwitchRow("有操作需要我确认", "审批请求，独立一条通知，点开就能处理", checked = a) { a = it; state.prefs.notifyApproval = it }
-        SwitchRow("任务完成、失败或取消", "任务结束时的结果", checked = t) { t = it; state.prefs.notifyTask = it }
-        SwitchRow("新回复", "助手发来新消息时的摘要", checked = r) { r = it; state.prefs.notifyReply = it }
-        Note("只在这个 Bot 的页面里不提醒（聊天、渠道、环境变量、执行器、技能、编辑）；前台看别的页面也会提醒。想在后台及时收到，打开「设置 › 后台保持连接」。通知样式在系统设置里调整。")
+        SectionLabel("推送方式")
+        SwitchRow(
+            "使用 ntfy 外部推送",
+            "由服务端通过 ntfy 发通知，App 内不再本地提醒；需先在网页端配置并让手机订阅同一 topic",
+            checked = state.externalPush,
+        ) { state.changeExternalPush(it) }
+        Note("开启后，审批、任务结束和新回复由服务端推送，App 被系统回收也能收到；事件类型在网页端「设置 › 推送」里配置。关闭时，只有 App 存活期间才会本地提醒。")
+
+        SectionLabel("App 内提醒")
+        SwitchRow(
+            "有操作需要我确认", "审批请求，独立一条通知，点开就能处理",
+            checked = a, enabled = !state.externalPush,
+        ) { a = it; state.prefs.notifyApproval = it }
+        SwitchRow(
+            "任务完成、失败或取消", "任务结束时的结果",
+            checked = t, enabled = !state.externalPush,
+        ) { t = it; state.prefs.notifyTask = it }
+        SwitchRow(
+            "新回复", "助手发来新消息时的摘要",
+            checked = r, enabled = !state.externalPush,
+        ) { r = it; state.prefs.notifyReply = it }
+        Note("只在这个 Bot 的页面里不提醒；前台看别的页面也会提醒。通知样式在系统设置里调整。")
     }
 }
 

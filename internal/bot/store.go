@@ -423,6 +423,13 @@ func (s *Store) Subscribe() (<-chan Event, func()) {
 	}
 }
 
+// LastSeq 返回当前最大的持久事件序号（含 internal 事件）。
+func (s *Store) LastSeq() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.seq
+}
+
 // Since 返回 seq 之后、可以给前端看的持久化事件。
 func (s *Store) Since(after int64) []Event {
 	s.mu.Lock()
