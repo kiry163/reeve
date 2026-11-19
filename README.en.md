@@ -24,11 +24,12 @@
 | Bots | Up to 32, each with its own workspace, memory, secrets, env vars and model |
 | Executors | Built-in agent (any OpenAI-compatible model) by default; `codex` / `pi` / `omp` CLIs as explicit upgrades |
 | Approvals | Rules → policy → card; one approval is bound to a single call, reusable for identical calls within the same task; chat-layer workspace reads/writes are auto-approved |
+| Auto-approve | Instance-wide shell command allowlist: exact or trailing-`*` prefix match, shared by all bots; dangerous and compound commands still need approval |
 | Env vars | Instance-level + per-call; readable by the model, writes audited; service install imports PATH/timezone/proxy/TLS from your shell; secrets never enter env |
 | Vault | AES-256-GCM at rest; the model only sees placeholders, outputs are redacted |
 | Skills | Local `SKILL.md`, indexed into the system prompt, body read on demand |
 | Slash commands | Parsed by the server and **never sent to the model**: `/help` `/stop` `/clear` `/model` `/agent` `/env` `/skills` `/context` `/tasks` `/approve` |
-| Push | Optional self-hosted ntfy: approvals, task results and replies; tapping opens the matching chat. No FCM/Google |
+| Push | Optional self-hosted ntfy with token or username/password auth: approvals, task results and replies; tapping opens the matching chat. No FCM/Google |
 | Service | `reeve service install` sets up launchd (macOS) or systemd `--user` (Linux) |
 
 Architecture, event catalogue and design rationale live in [docs/superpowers/specs/2026-11-14-reeve-design.md](docs/superpowers/specs/2026-11-14-reeve-design.md) (Chinese).

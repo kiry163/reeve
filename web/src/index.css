@@ -220,6 +220,25 @@ textarea:focus-visible{outline:none}
 .settings-field input:not([type="checkbox"]):not([type="radio"])::placeholder { color: var(--fg3); }
 .settings-field input:not([type="checkbox"]):not([type="radio"]):focus-visible { outline: 2px solid var(--fg3); outline-offset: 2px; border-color: transparent; }
 .settings-field input[type="checkbox"], .settings-field input[type="radio"] { flex-shrink: 0; width: 15px; height: 15px; accent-color: var(--fg); }
+.settings-field textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 190px;
+  padding: 10px 12px;
+  background: var(--s2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+}
+.settings-field textarea::placeholder { color: var(--fg3); }
+.settings-field textarea:focus-visible { outline: 2px solid var(--fg3); outline-offset: 2px; border-color: transparent; }
+.approve-preview.is-ok { color: var(--ok); }
+.approve-preview.is-warn { color: var(--warn); }
+.approve-preview.is-muted { color: var(--fg3); }
 .settings-key-input { position: relative; }
 .settings-key-input input { padding-right: 44px; }
 .settings-key-input button { position: absolute; top: 1px; right: 1px; bottom: 1px; width: 40px; display: grid; place-items: center; color: var(--fg3); border-radius: 8px; }
@@ -466,6 +485,7 @@ textarea:focus-visible{outline:none}
   .settings-pane { padding: 23px 14px 18px; }
   .settings-close { top: 10px; right: 8px; }
   .settings-field input { font-size: 16px; }
+  .settings-field textarea { font-size: 16px; }
   .settings-api-form { padding: 16px; border-radius: 12px; }
   .settings-api-actions { flex-wrap: wrap; gap: 14px; }
   .settings-save-note { flex-basis: 100%; }
@@ -545,7 +565,7 @@ textarea:focus-visible{outline:none}
 .settings-env-add { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: 8px; margin-top: 12px; }
 .settings-env-add .settings-button { min-height: 36px; }
 .settings-env-empty { margin: 2px 0 4px; padding: 10px 12px; border: 1px dashed var(--line2); border-radius: 10px; color: var(--fg3); font-size: 12px; line-height: 1.7; }
-.settings-env-empty code, .settings-skills-empty code, .settings-description code {
+.settings-env-empty code, .settings-skills-empty code, .settings-description code, .settings-field-hint code {
   padding: 1px 5px;
   border: 1px solid var(--line);
   border-radius: 5px;

@@ -57,8 +57,9 @@ reeve 没有 TLS：明文 HTTP 下登录密码、设备会话令牌和聊天内�
 ### 外部推送（ntfy）
 
 服务端在网页「设置 › 推送」里配置自建 ntfy。手机端安装 ntfy（F-Droid 或 GitHub 上**不带 FCM** 的构建），
-订阅 `ntfy://<host>/<topic>`，授予通知权限并关闭电池优化（国产 ROM 还要允许自启动）。然后在 App
-「设置 › 通知」里打开「使用 ntfy 外部推送」。
+订阅 `ntfy://<host>/<topic>`，授予通知权限并关闭电池优化（国产 ROM 还要允许自启动）。服务端的认证方式
+可选无、访问 token（Bearer）或用户名 + 密码（HTTP Basic）；如果 ntfy 开了访问控制，手机 App 里也要填
+同一份凭据。然后在 App「设置 › 通知」里打开「使用 ntfy 外部推送」。
 
 开启后：
 

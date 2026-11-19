@@ -1,6 +1,7 @@
-import { ArrowUpRight, BellRing, BookOpen, Braces, Check, CircleAlert, Cpu, KeyRound, LogOut, Plug, RefreshCw, X } from 'lucide-react';
+import { ArrowUpRight, BellRing, BookOpen, Braces, Check, CircleAlert, Cpu, KeyRound, LogOut, Plug, RefreshCw, ShieldCheck, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { api, createSettingsAPI, type BotProfile, type SettingsAPI, type UpdateStatus } from '../api';
+import AutoApprovePanel from './AutoApprovePanel';
 import BotModelSettings from './BotModelSettings';
 import ChannelsPage from './ChannelsPage';
 import EnvPanel from './EnvPanel';
@@ -11,7 +12,7 @@ const releasesPage = 'https://github.com/kiry163/reeve/releases';
 const message = (err: unknown) => err instanceof TypeError ? '无法连接 reeve 后端，请确认服务已启动'
   : err instanceof Error ? err.message : '请求失败，请重试';
 
-type Tab = 'models' | 'api' | 'env' | 'push' | 'skills' | 'update' | 'account';
+type Tab = 'models' | 'api' | 'env' | 'approve' | 'push' | 'skills' | 'update' | 'account';
 type Feedback = { error: boolean; text: string };
 
 export default function SettingsDialog({ onClose, bots, initialBot, onSettingsSaved }: {
@@ -65,6 +66,7 @@ export default function SettingsDialog({ onClose, bots, initialBot, onSettingsSa
           {navButton('models', <Cpu size={16} aria-hidden="true" />, '模型与 Agent')}
           {navButton('api', <Plug size={16} aria-hidden="true" />, 'API 渠道')}
           {navButton('env', <Braces size={16} aria-hidden="true" />, '环境变量')}
+          {navButton('approve', <ShieldCheck size={15} aria-hidden="true" />, '自动审批')}
           {navButton('push', <BellRing size={15} aria-hidden="true" />, '推送')}
           {navButton('skills', <BookOpen size={15} aria-hidden="true" />, '技能')}
           {navButton('update', <RefreshCw size={15} aria-hidden="true" />, '版本更新')}
@@ -86,6 +88,9 @@ export default function SettingsDialog({ onClose, bots, initialBot, onSettingsSa
         </section>
         <section id="settings-env" className="settings-pane" hidden={tab !== 'env'} aria-labelledby="settings-env-title">
           {tab === 'env' && <EnvPanel saving={saving} setSaving={setSaving} onDirty={setDirty} />}
+        </section>
+        <section id="settings-approve" className="settings-pane" hidden={tab !== 'approve'} aria-labelledby="settings-approve-title">
+          {tab === 'approve' && <AutoApprovePanel saving={saving} setSaving={setSaving} onDirty={setDirty} />}
         </section>
         <section id="settings-push" className="settings-pane" hidden={tab !== 'push'} aria-labelledby="settings-push-title">
           {tab === 'push' && <PushPanel saving={saving} setSaving={setSaving} onDirty={setDirty} />}

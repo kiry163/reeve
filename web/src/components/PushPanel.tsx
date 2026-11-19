@@ -1,6 +1,6 @@
 import { Check, CircleAlert, Copy, Eye, EyeOff, Loader2, RotateCcw, Send } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { api, type PushDraft } from '../api';
+import { api, type PushAuthMethod, type PushDraft } from '../api';
 
 const message = (e: unknown) => e instanceof TypeError ? '无法连接 reeve 后端，请确认服务已启动'
   : e instanceof Error ? e.message : '请求失败，请重试';
@@ -9,7 +9,7 @@ type Notice = { tone: 'ok' | 'warn' | 'error'; text: string };
 
 /**
  * 实例级 ntfy 推送：服务端把审批/任务终态/助手回复发到自建 ntfy，手机端由 ntfy App 接收。
- * token 只写不读；留空保留，清除则发空串。
+ * 认证支持 none / token / 用户名密码；token 和密码只写不读，留空保留，清除则发空串。
  */
 export default function PushPanel({ saving, setSaving, onDirty }: {
   saving: boolean;
@@ -20,6 +20,8 @@ export default function PushPanel({ saving, setSaving, onDirty }: {
   const [url, setURL] = useState('');
   const [topic, setTopic] = useState('');
   const [publicHost, setPublicHost] = useState('');
+  const [authMethod, setAuthMethod] = useState<PushAuthMethod>('none');
+  const [username, setUsername] = useState('');
   const [approval, setApproval] = useState(true);
   const [task, setTask] = useState(true);
   const [reply, setReply] = useState(true);
@@ -27,6 +29,10 @@ export default function PushPanel({ saving, setSaving, onDirty }: {
   const [hasToken, setHasToken] = useState(false);
   const [clearToken, setClearToken] = useState(false);
   const [showToken, setShowToken] = useState(false);
+  const [password, setPassword] = useState('');
+  const [hasPassword, setHasPassword] = useState(false);
+  const [clearPassword, setClearPassword] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const [dirty, setDirty] = useState(false);
   const [notice, setNotice] = useState<Notice>();
@@ -47,12 +53,17 @@ export default function PushPanel({ saving, setSaving, onDirty }: {
         setURL(v.url);
         setTopic(v.topic);
         setPublicHost(v.public_host);
+        setAuthMethod(v.auth_method);
+        setUsername(v.username);
         setApproval(v.approval);
         setTask(v.task);
         setReply(v.reply);
         setHasToken(v.has_token);
         setToken('');
         setClearToken(false);
+        setHasPassword(v.has_password);
+        setPassword('');
+        setClearPassword(false);
         setDirty(false);
         setNotice(undefined);
         setLoaded(true);
@@ -72,10 +83,18 @@ export default function PushPanel({ saving, setSaving, onDirty }: {
   function draft(): PushDraft {
     const d: PushDraft = {
       enabled, url: url.trim(), topic: topic.trim(), public_host: publicHost.trim(),
+      auth_method: authMethod,
+      username: authMethod === 'basic' ? username.trim() : '',
       approval, task, reply,
     };
-    if (clearToken) d.token = '';
-    else if (token.trim()) d.token = token.trim();
+    if (authMethod === 'token') {
+      if (clearToken) d.token = '';
+      else if (token.trim()) d.token = token.trim();
+    }
+    if (authMethod === 'basic') {
+      if (clearPassword) d.password = '';
+      else if (password) d.password = password;
+    }
     return d;
   }
 
@@ -83,6 +102,20 @@ export default function PushPanel({ saving, setSaving, onDirty }: {
     if (enabled && (!url.trim() || !topic.trim())) {
       setNotice({ tone: 'error', text: '启用推送前请填写 ntfy 地址和主题' });
       return false;
+    }
+    if (authMethod === 'token' && !token.trim() && (clearToken || !hasToken)) {
+      setNotice({ tone: 'error', text: '已选择 token 认证，请填写访问 token，或把认证方式改为无' });
+      return false;
+    }
+    if (authMethod === 'basic') {
+      if (!username.trim()) {
+        setNotice({ tone: 'error', text: '已选择用户名密码认证，请填写用户名' });
+        return false;
+      }
+      if (!password && (clearPassword || !hasPassword)) {
+        setNotice({ tone: 'error', text: '已选择用户名密码认证，请填写密码，或把认证方式改为无' });
+        return false;
+      }
     }
     setSaving(true);
     setNotice(undefined);
@@ -92,12 +125,17 @@ export default function PushPanel({ saving, setSaving, onDirty }: {
       setURL(v.url);
       setTopic(v.topic);
       setPublicHost(v.public_host);
+      setAuthMethod(v.auth_method);
+      setUsername(v.username);
       setApproval(v.approval);
       setTask(v.task);
       setReply(v.reply);
       setHasToken(v.has_token);
       setToken('');
       setClearToken(false);
+      setHasPassword(v.has_password);
+      setPassword('');
+      setClearPassword(false);
       setDirty(false);
       setNotice({ tone: 'ok', text: '推送设置已保存' });
       return true;
@@ -191,29 +229,85 @@ export default function PushPanel({ saving, setSaving, onDirty }: {
           </div>
 
           <div className="settings-field">
-            <div className="settings-field-head">
-              <label htmlFor="push-token">访问 token（可选）</label>
-              {hasToken && !clearToken && (
-                <button type="button" className="settings-link" disabled={saving}
-                  onClick={() => { setClearToken(true); setToken(''); touch(); }}>清除已保存的 token</button>
-              )}
-              {clearToken && (
-                <button type="button" className="settings-link" disabled={saving}
-                  onClick={() => { setClearToken(false); touch(); }}>撤销清除</button>
-              )}
-            </div>
-            <div className="settings-key-input">
-              <input id="push-token" type={showToken ? 'text' : 'password'} autoComplete="new-password"
-                value={token} disabled={saving}
-                placeholder={hasToken && !clearToken ? '已加密保存，留空保留' : '没有 token 可留空'}
-                onChange={(e) => { setToken(e.target.value); setClearToken(false); touch(); }} />
-              <button type="button" aria-label={showToken ? '隐藏 token' : '显示 token'}
-                onClick={() => setShowToken((v) => !v)}>{showToken ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}</button>
-            </div>
+            <label htmlFor="push-auth">认证方式</label>
+            <select id="push-auth" value={authMethod} disabled={saving}
+              onChange={(e) => { setAuthMethod(e.target.value as PushAuthMethod); touch(); }}>
+              <option value="none">无（公开 topic）</option>
+              <option value="token">访问 token（推荐）</option>
+              <option value="basic">用户名 + 密码</option>
+            </select>
             <span className="settings-field-hint">
-              {clearToken ? '保存时将清除已保存的 token。' : 'ntfy 开启访问控制时填写；只写不读，不会回显。'}
+              ntfy 开启访问控制时按服务端配置选择：token 走 Bearer，用户名密码走 HTTP Basic，两种只能选一种。
             </span>
           </div>
+
+          {authMethod === 'token' && (
+            <div className="settings-field">
+              <div className="settings-field-head">
+                <label htmlFor="push-token">访问 token</label>
+                {hasToken && !clearToken && (
+                  <button type="button" className="settings-link" disabled={saving}
+                    onClick={() => { setClearToken(true); setToken(''); touch(); }}>清除已保存的 token</button>
+                )}
+                {clearToken && (
+                  <button type="button" className="settings-link" disabled={saving}
+                    onClick={() => { setClearToken(false); touch(); }}>撤销清除</button>
+                )}
+              </div>
+              <div className="settings-key-input">
+                <input id="push-token" type={showToken ? 'text' : 'password'} autoComplete="new-password"
+                  value={token} disabled={saving}
+                  placeholder={hasToken && !clearToken ? '已加密保存，留空保留' : 'tk_…'}
+                  onChange={(e) => { setToken(e.target.value); setClearToken(false); touch(); }} />
+                <button type="button" aria-label={showToken ? '隐藏 token' : '显示 token'}
+                  onClick={() => setShowToken((v) => !v)}>{showToken ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}</button>
+              </div>
+              <span className="settings-field-hint">
+                {clearToken
+                  ? '保存前请填写新 token，或把认证方式改为无。'
+                  : hasToken
+                    ? '已加密保存；留空保留，填写则替换。只写不读，不会回显。'
+                    : '在 ntfy 服务端创建 access token 后填入；只写不读，不会回显。'}
+              </span>
+            </div>
+          )}
+
+          {authMethod === 'basic' && (
+            <>
+              <div className="settings-field">
+                <label htmlFor="push-username">用户名</label>
+                <input id="push-username" value={username} autoComplete="off" spellCheck={false}
+                  disabled={saving} placeholder="ntfy 用户名"
+                  onChange={(e) => { setUsername(e.target.value); touch(); }} />
+              </div>
+              <div className="settings-field">
+                <div className="settings-field-head">
+                  <label htmlFor="push-password">密码</label>
+                  {hasPassword && !clearPassword && (
+                    <button type="button" className="settings-link" disabled={saving}
+                      onClick={() => { setClearPassword(true); setPassword(''); touch(); }}>清除已保存的密码</button>
+                  )}
+                  {clearPassword && (
+                    <button type="button" className="settings-link" disabled={saving}
+                      onClick={() => { setClearPassword(false); touch(); }}>撤销清除</button>
+                  )}
+                </div>
+                <div className="settings-key-input">
+                  <input id="push-password" type={showPassword ? 'text' : 'password'} autoComplete="new-password"
+                    value={password} disabled={saving}
+                    placeholder={hasPassword && !clearPassword ? '已加密保存，留空保留' : 'ntfy 密码'}
+                    onChange={(e) => { setPassword(e.target.value); setClearPassword(false); touch(); }} />
+                  <button type="button" aria-label={showPassword ? '隐藏密码' : '显示密码'}
+                    onClick={() => setShowPassword((v) => !v)}>{showPassword ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}</button>
+                </div>
+                <span className="settings-field-hint">
+                  {clearPassword
+                    ? '保存前请填写新密码，或把认证方式改为无。'
+                    : '用于 HTTP Basic auth；只写不读，不会回显。'}
+                </span>
+              </div>
+            </>
+          )}
 
           <div className="settings-field">
             <label htmlFor="push-host">客户端访问地址（可选）</label>
@@ -243,7 +337,7 @@ export default function PushPanel({ saving, setSaving, onDirty }: {
           {insecure && (
             <p className="settings-feedback is-warn">
               <CircleAlert size={15} aria-hidden="true" />
-              <span>ntfy 地址不是 HTTPS：topic 和 token 会明文经过网络，建议改用 HTTPS。</span>
+              <span>ntfy 地址不是 HTTPS：topic 和认证凭据会明文经过网络（Basic auth 只是 Base64 编码，不是加密），建议改用 HTTPS。</span>
             </p>
           )}
 
@@ -257,7 +351,13 @@ export default function PushPanel({ saving, setSaving, onDirty }: {
                   <Copy size={16} aria-hidden="true" />
                 </button>
               </div>
-              <span className="settings-field-hint">在手机 ntfy App 里添加订阅；如果 ntfy 开了访问控制，token 也要在 App 里填。</span>
+              <span className="settings-field-hint">
+                {authMethod === 'token'
+                  ? '在手机 ntfy App 里添加订阅，并在 App 里填同一个访问 token。'
+                  : authMethod === 'basic'
+                    ? '在手机 ntfy App 里添加订阅，并填同一个用户名和密码。'
+                    : '在手机 ntfy App 里添加订阅；如果 ntfy 开了访问控制，还要在 App 里填 token 或用户名密码。'}
+              </span>
             </div>
           )}
 

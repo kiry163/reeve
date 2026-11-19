@@ -162,3 +162,63 @@ func TestOnceApprovalUsePersistsAcrossRestart(t *testing.T) {
 		t.Fatal("a used once-approval must not authorize again after restart")
 	}
 }
+
+// 实例级白名单通过 SetAllowShell 热更新，编译失败时旧规则必须保留。
+func TestAllowShellHotUpdate(t *testing.T) {
+	g, err := NewGuard(Rules{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := Task{ID: "t", Workspace: t.TempDir(), Policy: PolicyUntrusted}
+	args := raw(map[string]string{"command": "go test ./..."})
+	if v, _ := g.Classify(task, ShellTool, args); v.Decision != AskUser {
+		t.Fatalf("没有白名单时应询问，得到 %v", v.Decision)
+	}
+	if err := g.SetAllowShell([]string{`^go test\b`}); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := g.Classify(task, ShellTool, args); v.Decision != Allow {
+		t.Fatalf("命中白名单后应放行，得到 %v", v.Decision)
+	}
+	if err := g.SetAllowShell([]string{`(`}); err == nil {
+		t.Fatal("非法正则应该报错")
+	}
+	if v, _ := g.Classify(task, ShellTool, args); v.Decision != Allow {
+		t.Fatalf("热更新失败后应保留旧规则，得到 %v", v.Decision)
+	}
+}
+
+// 允许名单只放行单条简单命令；复合命令必须继续走审批，避免 `go test; rm -rf /` 被前缀匹配放行。
+func TestAllowShellRejectsCompoundCommands(t *testing.T) {
+	g, err := NewGuard(Rules{AllowShell: []string{`^go test.*$`}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := Task{ID: "t", Workspace: ".", Policy: PolicyUntrusted}
+	if v, _ := g.Classify(task, ShellTool, raw(map[string]string{"command": "go test ./..."})); v.Decision != Allow {
+		t.Fatalf("简单命令应放行，得到 %v", v.Decision)
+	}
+	for _, cmd := range []string{
+		"go test ./...; touch x",
+		"go test ./... && echo ok",
+		"go test ./... || true",
+		"go test ./... | head",
+		"go test $(pwd)",
+		"go test `pwd`",
+		"go test ./... > out",
+		"go test ./...\necho x",
+	} {
+		if v, _ := g.Classify(task, ShellTool, raw(map[string]string{"command": cmd})); v.Decision != AskUser {
+			t.Errorf("%q 应继续询问，得到 %v", cmd, v.Decision)
+		}
+	}
+	// 非空 env 可以改 PATH/BASH_ENV/LD_PRELOAD，不能借白名单自动执行。
+	withEnv := raw(map[string]any{"command": "go test ./...", "env": map[string]string{"PATH": "/tmp/evil"}})
+	if v, _ := g.Classify(task, ShellTool, withEnv); v.Decision != AskUser {
+		t.Errorf("带 env 的命令应继续询问，得到 %v", v.Decision)
+	}
+	emptyEnv := raw(map[string]any{"command": "go test ./...", "env": map[string]string{}})
+	if v, _ := g.Classify(task, ShellTool, emptyEnv); v.Decision != Allow {
+		t.Errorf("空 env 不应影响白名单，得到 %v", v.Decision)
+	}
+}

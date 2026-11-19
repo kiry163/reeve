@@ -99,26 +99,42 @@ export type EnvAPI = {
 
 // ---------- 实例级推送（自建 ntfy） ----------
 
-// token 只写不读：GET 只返回 has_token，保存时省略 token 表示保留，空串表示清除。
+// token/密码只写不读：GET 只返回 has_token/has_password，保存时省略表示保留，空串表示清除。
+// auth_method 决定用哪种凭据：none（匿名）、token（Bearer）或 basic（用户名密码）。
+export type PushAuthMethod = 'none' | 'token' | 'basic';
 export type PushSettings = {
   enabled: boolean;
   url: string;
   topic: string;
   public_host: string;
+  auth_method: PushAuthMethod;
+  username: string;
   approval: boolean;
   task: boolean;
   reply: boolean;
   has_token: boolean;
+  has_password: boolean;
 };
-export type PushDraft = Omit<PushSettings, 'has_token'> & { token?: string };
+export type PushDraft = Omit<PushSettings, 'has_token' | 'has_password'> & {
+  token?: string;
+  password?: string;
+};
 export type PushAPI = {
   get: (signal?: AbortSignal) => Promise<PushSettings>;
   save: (draft: PushDraft) => Promise<PushSettings>;
   test: () => Promise<{ ok: boolean }>;
 };
 
-export type CommandInfo = { name: string; aliases: string[]; summary: string; usage: string };
+// ---------- 实例级自动审批命令白名单 ----------
 
+// commands 是原始命令模式：整条精确匹配，末尾 * 表示前缀匹配。
+export type ApprovalWhitelist = { commands: string[] };
+export type ApprovalWhitelistAPI = {
+  get: (signal?: AbortSignal) => Promise<ApprovalWhitelist>;
+  save: (commands: string[]) => Promise<ApprovalWhitelist>;
+};
+
+export type CommandInfo = { name: string; aliases: string[]; summary: string; usage: string };
 export type SkillInfo = { name: string; description: string; when_to_use: string; path: string };
 export type SkillIndex = { skills: SkillInfo[]; errors: string[] };
 
@@ -359,14 +375,30 @@ function pushAPI(base: string): PushAPI {
         url: typeof v.url === 'string' ? v.url : '',
         topic: typeof v.topic === 'string' ? v.topic : '',
         public_host: typeof v.public_host === 'string' ? v.public_host : '',
+        auth_method: v.auth_method === 'token' || v.auth_method === 'basic' ? v.auth_method : 'none',
+        username: typeof v.username === 'string' ? v.username : '',
         approval: v.approval !== false,
         task: v.task !== false,
         reply: v.reply !== false,
         has_token: !!v.has_token,
+        has_password: !!v.has_password,
       };
     },
     save: (draft: PushDraft): Promise<PushSettings> => post(`${base}/push`, draft, 'PUT'),
     test: (): Promise<{ ok: boolean }> => post(`${base}/push/test`),
+  };
+}
+
+// 实例级自动审批命令白名单：所有 Bot 共用。
+function approvalWhitelistAPI(base: string): ApprovalWhitelistAPI {
+  const normalize = (v: ApprovalWhitelist): ApprovalWhitelist => ({
+    commands: Array.isArray(v.commands) ? v.commands.filter((x): x is string => typeof x === 'string') : [],
+  });
+  return {
+    get: async (signal?: AbortSignal): Promise<ApprovalWhitelist> =>
+      normalize(await get<ApprovalWhitelist>(`${base}/approvals/whitelist`, signal)),
+    save: async (commands: string[]): Promise<ApprovalWhitelist> =>
+      normalize(await post(`${base}/approvals/whitelist`, { commands }, 'PUT')),
   };
 }
 
@@ -497,6 +529,8 @@ export const api = {
   env: envAPI('/api'),
   // 实例级 ntfy 推送。
   push: pushAPI('/api'),
+  // 实例级自动审批命令白名单。
+  approvalWhitelist: approvalWhitelistAPI('/api'),
   bots: (signal?: AbortSignal): Promise<BotProfile[]> => get('/api/bots', signal),
   createBot: (draft: BotDraft): Promise<BotProfile> => post('/api/bots', draft),
   editBot: (id: string, draft: BotDraft): Promise<BotProfile> => post(botPath(id), draft, 'PATCH'),

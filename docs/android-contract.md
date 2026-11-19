@@ -49,8 +49,9 @@
 | `PATCH /api/bots/{id}` | `{name,instructions}` | `BotProfile` |
 | `DELETE /api/bots/{id}?purge=1` | — | `{"ok":true}`（`main` → 400） |
 | `GET /api/env` `PUT /api/env` | PUT `{"vars":{K:V}}`（**整体替换**，实例级，所有 Bot 共用） | `{"vars":{K:V}}` / `{"ok":bool,"warnings":[…]}` |
-| `GET /api/push` `PUT /api/push` | PUT `{enabled,url,topic,public_host,approval,task,reply,token?}`（token 省略=保留，空串=清除） | `{enabled,url,topic,public_host,approval,task,reply,has_token}` |
+| `GET /api/push` `PUT /api/push` | PUT `{enabled,url,topic,public_host,auth_method,username,approval,task,reply,token?,password?}`（`auth_method` 为 `none`/`token`/`basic`；token/password 省略=保留，空串=清除） | `{enabled,url,topic,public_host,auth_method,username,approval,task,reply,has_token,has_password}` |
 | `POST /api/push/test` | — | `{"ok":true}`；ntfy 返回错误时 400 + `{"error":"…"}` |
+| `GET /api/approvals/whitelist` `PUT /api/approvals/whitelist` | PUT `{"commands":["go test*"]}`（实例级，所有 Bot 共用；整条精确或末尾 `*` 前缀匹配） | `{"commands":[…]}` |
 | `GET /api/commands` | — | `{"commands":[{name,aliases:[],summary,usage}]}` |
 | `GET /api/channels` `POST /api/channels` | `{"providers":[APIChannel]}` | `{"providers":[APIChannel],"usage":[{bot_id,name,chat_provider_id,agent_provider_id,agent_cli}]}` |
 | `GET /api/settings` `POST /api/settings` | `APISettings` | `APISettings` |

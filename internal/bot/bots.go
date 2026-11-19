@@ -55,8 +55,11 @@ type Bots struct {
 	retired  sync.WaitGroup
 	sharedMu sync.Mutex
 	closed   bool
-	gateway  *cliGateway  // 给 Pi 等外部 CLI 用的本机模型网关
-	push     *pushManager // 实例级 ntfy 推送
+	gateway  *cliGateway        // 给 Pi 等外部 CLI 用的本机模型网关
+	push     *pushManager       // 实例级 ntfy 推送
+	approval *approvalWhitelist // 实例级自动审批命令白名单
+
+	approvalMu sync.Mutex // 串行化白名单保存：落盘、更新内存、热应用到各 Bot 必须是一个整体
 }
 
 type botEndpoint struct {
@@ -72,12 +75,16 @@ func OpenBots(cfg Config) (*Bots, error) {
 		return nil, err
 	}
 	cli.SetToolsDir(filepath.Join(cfg.DataDir, "tools"))
+	// 自动审批白名单是实例级的：先加载，再让默认 Bot 和后续 Bot 都用同一份。
+	approval := loadApprovalWhitelist(cfg.DataDir, cfg.Rules.AllowShell)
+	cfg.Rules.AllowShell = approval.rules()
 	main, err := New(cfg)
 	if err != nil {
 		return nil, err
 	}
 	bs := &Bots{main: main, workRoot: workspace + "-bots", profiles: []BotProfile{main.botProfile()},
-		runtimes: map[string]*Bot{defaultBotID: main}, handlers: map[string]*botEndpoint{defaultBotID: {Handler: main.Handler("")}}}
+		runtimes: map[string]*Bot{defaultBotID: main}, handlers: map[string]*botEndpoint{defaultBotID: {Handler: main.Handler("")}},
+		approval: approval}
 	main.coordinator = bs
 	if bs.gateway, err = startCLIGateway(main.pool, main.redactor); err != nil {
 		bs.Close()
@@ -146,6 +153,10 @@ func (bs *Bots) open(p BotProfile) (*Bot, error) {
 	}
 	cfg.DataDir = filepath.Join(cfg.DataDir, "bots", p.ID)
 	cfg.Workspace = filepath.Join(bs.workRoot, p.ID)
+	if bs.approval != nil {
+		// 运行期新增的 Bot 也要拿到当前白名单，而不是启动时的快照。
+		cfg.Rules.AllowShell = bs.approval.rules()
+	}
 	return newRuntime(cfg, bs.main, &p)
 }
 
@@ -358,7 +369,7 @@ func (bs *Bots) Handler(ui fs.FS) http.Handler {
 	mux.HandleFunc("PUT /api/env", func(w http.ResponseWriter, r *http.Request) {
 		handleEnvPut(w, r, bs.main.ReplaceInstanceEnv)
 	})
-	// 实例级 ntfy 推送：地址/topic/token 和三个事件开关，配置存 <实例目录>/push.json。
+	// 实例级 ntfy 推送：地址/topic/认证凭据和三个事件开关，配置存 <实例目录>/push.json。
 	mux.HandleFunc("GET /api/push", func(w http.ResponseWriter, r *http.Request) {
 		if bs.push == nil {
 			writeJSON(w, pushView{}, nil)
@@ -385,6 +396,24 @@ func (bs *Bots) Handler(ui fs.FS) http.Handler {
 		}
 		err := bs.push.test(r.Context())
 		writeJSON(w, map[string]bool{"ok": err == nil}, err)
+	})
+	// 实例级自动审批命令白名单：所有 Bot 共用；命中后 shell 命令不再弹审批卡。
+	mux.HandleFunc("GET /api/approvals/whitelist", func(w http.ResponseWriter, r *http.Request) {
+		if bs.approval == nil {
+			writeJSON(w, approvalWhitelistView{Commands: []string{}}, nil)
+			return
+		}
+		writeJSON(w, bs.approval.view(), nil)
+	})
+	mux.HandleFunc("PUT /api/approvals/whitelist", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Commands []string `json:"commands"`
+		}
+		if !decodeJSON(w, r, &body, 64<<10) {
+			return
+		}
+		view, err := bs.saveApprovalWhitelist(body.Commands)
+		writeJSON(w, view, err)
 	})
 	mux.HandleFunc("GET /api/commands", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, commandList{Commands: bs.main.commandInfos()}, nil)
@@ -512,6 +541,31 @@ func (bs *Bots) copySettings(fromID, toID string) (APISettings, error) {
 		return APISettings{}, fmt.Errorf("模型已复制，但执行器设置没有复制成功: %w", err)
 	}
 	return dst.GetSettings(), nil
+}
+
+// saveApprovalWhitelist 保存实例级自动审批白名单，并热更新所有已运行 Bot 的 Guard。
+// 先落盘/更新管理器状态，再拿 bs.mu 应用；和 setProfile 新建 Bot 的路径串行，避免新 Bot 拿到旧规则。
+func (bs *Bots) saveApprovalWhitelist(commands []string) (approvalWhitelistView, error) {
+	if bs.approval == nil {
+		return approvalWhitelistView{}, errors.New("自动审批白名单未初始化")
+	}
+	bs.approvalMu.Lock()
+	defer bs.approvalMu.Unlock()
+	rules, err := bs.approval.save(commands)
+	if err != nil {
+		return approvalWhitelistView{}, err
+	}
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	for _, b := range bs.runtimes {
+		if b == nil {
+			continue
+		}
+		if err := b.guard.SetAllowShell(rules); err != nil {
+			return approvalWhitelistView{}, err
+		}
+	}
+	return bs.approval.view(), nil
 }
 
 // channelsView 列出设备上的 API 渠道，并附上每个 Bot 的聊天 / Agent 各用了哪个渠道。

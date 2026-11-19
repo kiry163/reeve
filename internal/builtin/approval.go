@@ -164,6 +164,13 @@ type Rules struct {
 	DenyTools   []string // 完全禁用的工具
 }
 
+// ShellUnsafeForAllowlist 判断命令是否包含会执行额外命令、做替换或重定向的 shell 语法。
+// 允许名单是前缀/整条匹配，不能因为开头匹配就放行 `go test; rm -rf /` 这样的复合命令。
+// 这里不做完整的 shell 解析：宁可保守地让这些命令继续走审批。
+func ShellUnsafeForAllowlist(cmd string) bool {
+	return strings.ContainsAny(cmd, ";&|<>`$\n\r")
+}
+
 // Guard 是每次工具调用执行前的分层审批：规则 -> 用户。
 type Guard struct {
 	Approver Approver
@@ -172,6 +179,7 @@ type Guard struct {
 	Secrets  Secrets // 可选：密钥库，负责 {{secret:NAME}} 替换和输出脱敏
 
 	denyTools           map[string]bool
+	ruleMu              sync.RWMutex
 	allow, deny, danger []*regexp.Regexp
 	mu                  sync.Mutex
 	records             []*ApprovalRecord
@@ -193,6 +201,26 @@ func NewGuard(r Rules, ap Approver) (*Guard, error) {
 		return nil, err
 	}
 	return g, nil
+}
+
+// SetAllowShell 在运行时替换命令允许名单（实例级白名单热更新）。
+// 拒绝名单和危险规则不受影响；编译失败时保留旧名单。
+func (g *Guard) SetAllowShell(patterns []string) error {
+	allow, err := compileAll(patterns)
+	if err != nil {
+		return err
+	}
+	g.ruleMu.Lock()
+	g.allow = allow
+	g.ruleMu.Unlock()
+	return nil
+}
+
+// shellRules 取一次规则快照；SetAllowShell 只替换 allow，deny/danger 创建后不变。
+func (g *Guard) shellRules() (allow, deny, danger []*regexp.Regexp) {
+	g.ruleMu.RLock()
+	defer g.ruleMu.RUnlock()
+	return g.allow, g.deny, g.danger
 }
 
 func compileAll(pats []string) ([]*regexp.Regexp, error) {
@@ -238,7 +266,8 @@ func (g *Guard) Classify(t Task, tool Tool, args json.RawMessage) (Verdict, Risk
 	}
 	risk := tool.Risk(args)
 	cmd, isCmd := m["command"].(string)
-	if isCmd && anyMatch(g.deny, cmd) {
+	allow, deny, danger := g.shellRules()
+	if isCmd && anyMatch(deny, cmd) {
 		return Verdict{Deny, "命令命中拒绝名单", "rule"}, RiskDanger
 	}
 	if refs := SecretRefs(args); len(refs) > 0 && !handlesSecrets(tool) {
@@ -249,7 +278,7 @@ func (g *Guard) Classify(t Task, tool Tool, args json.RawMessage) (Verdict, Risk
 		if err := g.Secrets.Allowed(tool.Name(), args, refs); err != nil {
 			return Verdict{Deny, err.Error(), "rule"}, risk
 		}
-		if isCmd && anyMatch(g.danger, cmd) {
+		if isCmd && anyMatch(danger, cmd) {
 			risk = RiskDanger
 		}
 		risk = max(risk, RiskExec)
@@ -259,10 +288,18 @@ func (g *Guard) Classify(t Task, tool Tool, args json.RawMessage) (Verdict, Risk
 		return Verdict{AskUser, "要使用密钥 " + strings.Join(refs, "、") + "（真实值只在执行时替换，不会给模型看）", "rule"}, risk
 	}
 	if isCmd {
+		// 调用级 env 可以改 PATH/BASH_ENV/LD_PRELOAD 等，等于换了一条命令执行；
+		// 这种调用不走白名单，继续交给用户确认。
+		envSet := false
+		if v, ok := m["env"]; ok && v != nil {
+			if mm, ok := v.(map[string]any); !ok || len(mm) > 0 {
+				envSet = true
+			}
+		}
 		switch {
-		case anyMatch(g.danger, cmd):
+		case anyMatch(danger, cmd):
 			risk = RiskDanger
-		case anyMatch(g.allow, cmd):
+		case anyMatch(allow, cmd) && !envSet && !ShellUnsafeForAllowlist(cmd):
 			return Verdict{Allow, "命令命中允许名单", "rule"}, risk
 		}
 	}
